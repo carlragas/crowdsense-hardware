@@ -5,6 +5,7 @@ i#include <Wire.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
+// GitHub Migrated Hardware Code !
 // ============ CONFIGURATION ============
 // I2C
 #define I2C_SDA 21
