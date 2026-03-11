@@ -6,7 +6,7 @@
 #include <DallasTemperature.h>
 #include <WiFi.h>
 
-// ============ CONFIGURATION ============
+// Pin Configuration
 #define I2C_SDA 21
 #define I2C_SCL 22
 #define SCREEN_WIDTH 128
@@ -20,8 +20,8 @@
 #define GAS_ANALOG 35
 
 // WiFi Access Point Configuration
-const char* apSSID = "ESP32_CrowdSense";  // AP name you'll see on your phone
-const char* apPassword = "12345678";       // Password (min 8 characters)
+const char* apSSID = "ESP32_CrowdSense"
+const char* apPassword = "12345678";   
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 VL53L1X tofSensor;
@@ -38,7 +38,7 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   
-  Serial.println("\n\n=== 4-IN-1 SENSOR SYSTEM WITH WiFi ===");
+  Serial.println("\n\n=== CROWDSENSE PROTOTYPE ===");
   
   // Get and display MAC address
   getMACAddress();
