@@ -1,12 +1,12 @@
 #include <Wire.h>
+#include <vl53l8cx.h> // New ToF Library
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_GFX.h>
-#include <VL53L1X.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <WiFi.h>
 
-// Pin Configuration
+// --- Pin Configuration ---
 #define I2C_SDA 21
 #define I2C_SCL 22
 #define SCREEN_WIDTH 128
@@ -19,13 +19,27 @@
 #define GAS_DIGITAL 33
 #define GAS_ANALOG 35
 
-// Object Initialization
+// --- Object Initialization ---
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-VL53L1X distanceSensor;
+VL53L8CX sensor(&Wire, -1); // Replaced VL53L1X with VL53L8CX
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 
+// --- Global Variables ---
 bool tofSuccess = false;
+
+// People Counting Variables
+const int PERSON_THRESHOLD_MM = 1500; 
+int totalInside = 0;
+int totalEntries = 0;
+int totalExits = 0;
+int currentState = 0; 
+
+// Environmental Variables (stored so OLED can refresh them without re-reading)
+float currentTempC = 0.0;
+int currentGasValue = 0;
+int currentFlameValue = 0;
+unsigned long lastEnvReadTime = 0; // For non-blocking 1-second timer
 
 void setup() {
   Serial.begin(115200);
@@ -34,6 +48,7 @@ void setup() {
 
   // 1. Initialize I2C
   Wire.begin(I2C_SDA, I2C_SCL);
+  Wire.setClock(400000); // Push I2C speed to 400kHz for the VL53L8CX
 
   // 2. Initialize OLED
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
@@ -42,21 +57,27 @@ void setup() {
     display.clearDisplay();
     display.setTextColor(WHITE);
     display.setCursor(0,0);
-    display.println("Booting...");
+    display.println("Booting System...");
     display.display();
   }
 
-  // 3. Initialize VL53L1X (The likely crash point)
-  distanceSensor.setTimeout(500);
-  if (!distanceSensor.init()) {
-    Serial.println("CRITICAL: VL53L1X sensor not found!");
+  // 3. Initialize VL53L8CX (Multizone)
+  display.println("Starting ToF...");
+  display.display();
+  
+  sensor.begin();
+  sensor.off();
+  sensor.on();
+  
+  if (sensor.init() != 0) {
+    Serial.println("CRITICAL: VL53L8CX sensor not found!");
     tofSuccess = false;
   } else {
-    distanceSensor.setDistanceMode(VL53L1X::Long);
-    distanceSensor.setMeasurementTimingBudget(50000);
-    distanceSensor.startContinuous(50);
+    sensor.set_resolution(VL53L8CX_RESOLUTION_4X4);
+    sensor.set_ranging_frequency_hz(15);
+    sensor.start_ranging();
     tofSuccess = true;
-    Serial.println("VL53L1X Initialized.");
+    Serial.println("VL53L8CX Initialized.");
   }
 
   // 4. Initialize DS18B20
@@ -75,36 +96,118 @@ void setup() {
 }
 
 void loop() {
-  // Read Flame & Gas (Analog/Digital)
-  int flameValue = analogRead(FLAME_ANALOG);
-  bool flameDetected = !digitalRead(FLAME_DIGITAL);
-  int gasValue = analogRead(GAS_ANALOG);
-  bool gasAlert = digitalRead(GAS_DIGITAL);
+  // =========================================================
+  // TASK 1: READ ENVIRONMENTAL SENSORS (ONCE PER SECOND)
+  // =========================================================
+  // We use millis() instead of delay(1000) so we don't block the ToF sensor!
+  if (millis() - lastEnvReadTime >= 1000) {
+    lastEnvReadTime = millis();
+    
+    currentFlameValue = analogRead(FLAME_ANALOG);
+    currentGasValue = analogRead(GAS_ANALOG);
+    
+    sensors.requestTemperatures();
+    currentTempC = sensors.getTempCByIndex(0);
 
-  // Read ToF ONLY if it initialized correctly
-  uint16_t distance = 0;
-  if (tofSuccess) {
-    distance = distanceSensor.read();
+    // Output to Serial periodically
+    Serial.print("Temp: "); Serial.print(currentTempC); Serial.print("C | ");
+    Serial.print("Gas: "); Serial.print(currentGasValue); Serial.print(" | ");
+    Serial.print("Flame: "); Serial.print(currentFlameValue); Serial.print(" | ");
+    Serial.print("People Inside: "); Serial.println(totalInside);
   }
 
-  // Read Temperature
-  sensors.requestTemperatures();
-  float tempC = sensors.getTempCByIndex(0);
+  // =========================================================
+  // TASK 2: PROCESS MULTIZONE ToF DATA (CONTINUOUSLY)
+  // =========================================================
+  if (tofSuccess) {
+    VL53L8CX_ResultsData results;
+    uint8_t dataReady = 0;
 
-  // --- Output to Serial ---
-  Serial.print("Dist: "); Serial.print(distance); Serial.print("mm | ");
-  Serial.print("Temp: "); Serial.print(tempC); Serial.print("C | ");
-  Serial.print("Gas: "); Serial.print(gasValue); Serial.print(" | ");
-  Serial.print("Flame: "); Serial.println(flameValue);
+    sensor.check_data_ready(&dataReady);
 
-  // --- Update OLED ---
-  display.clearDisplay();
-  display.setCursor(0,0);
-  display.print("Dist: "); display.print(distance); display.println(" mm");
-  display.print("Temp: "); display.print(tempC); display.println(" C");
-  display.print("Gas:  "); display.println(gasValue);
-  display.print("Flame:"); display.println(flameValue);
-  display.display();
+    if (dataReady) {
+      sensor.get_ranging_data(&results);
 
-  delay(1000);
+      bool zoneA_active = false; // "Front" half
+      bool zoneB_active = false; // "Back" half
+
+      for (int y = 0; y < 4; y++) {
+        for (int x = 0; x < 4; x++) {
+          int i = x + (y * 4); 
+          int distance = results.distance_mm[i];
+          uint8_t status = results.target_status[i];
+
+          if ((status == 5 || status == 6 || status == 9) && distance > 0 && distance < PERSON_THRESHOLD_MM) {
+            if (y < 2) zoneA_active = true;
+            else zoneB_active = true;
+          }
+        }
+      }
+
+      // --- State Machine Logic ---
+      if (currentState == 0) {
+        if (zoneA_active && !zoneB_active) currentState = 1; 
+        if (!zoneA_active && zoneB_active) currentState = 3; 
+      }
+      else if (currentState == 1) {
+        if (zoneA_active && zoneB_active) currentState = 2; 
+        if (!zoneA_active && zoneB_active) currentState = 3; 
+        if (!zoneA_active && !zoneB_active) currentState = 0; 
+      }
+      else if (currentState == 2) {
+        if (!zoneA_active && zoneB_active) currentState = 3; 
+        if (zoneA_active && !zoneB_active) currentState = 1; 
+        if (!zoneA_active && !zoneB_active) currentState = 0; 
+      }
+      else if (currentState == 3) {
+        if (!zoneA_active && !zoneB_active) {
+          totalEntries++;
+          totalInside++;
+          currentState = 0; 
+        }
+        if (zoneA_active && zoneB_active) currentState = 2; 
+        if (zoneA_active && !zoneB_active) {
+          totalExits++;
+          totalInside--;
+          currentState = 0; 
+        }
+      }
+
+      if (totalInside < 0) totalInside = 0;
+
+      // =========================================================
+      // TASK 3: UPDATE OLED UI WITH ALL DATA
+      // =========================================================
+      display.clearDisplay();
+      
+      // Top Row: Status
+      display.setTextSize(1);
+      display.setCursor(0, 0);
+      display.print("CrowdSense AP Active");
+      
+      // Sensor Status Indicators (Top Right)
+      display.fillRect(105, 0, 8, 8, zoneA_active ? SSD1306_WHITE : SSD1306_BLACK);
+      display.fillRect(115, 0, 8, 8, zoneB_active ? SSD1306_WHITE : SSD1306_BLACK);
+
+      // Middle Row: People Count
+      display.setTextSize(2);
+      display.setCursor(0, 15);
+      display.print("IN: ");
+      display.print(totalInside);
+
+      // Environmental Data
+      display.setTextSize(1);
+      display.setCursor(0, 35);
+      display.print("T:"); display.print(currentTempC, 1); display.print("C ");
+      display.print("G:"); display.print(currentGasValue); display.print(" ");
+      display.print("F:"); display.print(currentFlameValue);
+      
+      // Bottom Row: Stats
+      display.setCursor(0, 50);
+      display.print("Tot In:"); display.print(totalEntries);
+      display.print(" Out:"); display.print(totalExits);
+
+      display.display();
+    }
+  }
 }
