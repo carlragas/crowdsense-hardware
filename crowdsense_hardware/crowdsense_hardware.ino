@@ -5,8 +5,8 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <WiFi.h>
-
-// --- Pin Configuration ---
+//ssss
+// ============ CONFIGURATION ============
 #define I2C_SDA 21
 #define I2C_SCL 22
 #define SCREEN_WIDTH 128
