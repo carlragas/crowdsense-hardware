@@ -21,7 +21,7 @@
 
 // --- Object Initialization ---
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-VL53L8CX sensor(&Wire, -1); // Replaced VL53L1X with VL53L8CX
+VL53L8CX sensor(&Wire, -1); 
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 
@@ -33,22 +33,29 @@ const int PERSON_THRESHOLD_MM = 1500;
 int totalInside = 0;
 int totalEntries = 0;
 int totalExits = 0;
-int currentState = 0; 
 
-// Environmental Variables (stored so OLED can refresh them without re-reading)
+// MULTI-LANE TRACKING: 4 separate state machines for columns 0, 1, 2, and 3
+int laneState[4] = {0, 0, 0, 0}; 
+
+// Cooldown timers to prevent a single person triggering multiple lanes at once
+unsigned long lastEntryTime = 0;
+unsigned long lastExitTime = 0;
+const int EVENT_COOLDOWN_MS = 800; // Ignore duplicate events within 800ms
+
+// Environmental Variables
 float currentTempC = 0.0;
 int currentGasValue = 0;
 int currentFlameValue = 0;
-unsigned long lastEnvReadTime = 0; // For non-blocking 1-second timer
+unsigned long lastEnvReadTime = 0; 
 
 void setup() {
   Serial.begin(115200);
-  delay(1000); // Give serial time to stabilize
+  delay(1000); 
   Serial.println("\n--- System Booting ---");
 
   // 1. Initialize I2C
   Wire.begin(I2C_SDA, I2C_SCL);
-  Wire.setClock(400000); // Push I2C speed to 400kHz for the VL53L8CX
+  Wire.setClock(400000); 
 
   // 2. Initialize OLED
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
@@ -61,7 +68,7 @@ void setup() {
     display.display();
   }
 
-  // 3. Initialize VL53L8CX (Multizone)
+  // 3. Initialize VL53L8CX 
   display.println("Starting ToF...");
   display.display();
   
@@ -99,7 +106,6 @@ void loop() {
   // =========================================================
   // TASK 1: READ ENVIRONMENTAL SENSORS (ONCE PER SECOND)
   // =========================================================
-  // We use millis() instead of delay(1000) so we don't block the ToF sensor!
   if (millis() - lastEnvReadTime >= 1000) {
     lastEnvReadTime = millis();
     
@@ -109,7 +115,6 @@ void loop() {
     sensors.requestTemperatures();
     currentTempC = sensors.getTempCByIndex(0);
 
-    // Output to Serial periodically
     Serial.print("Temp: "); Serial.print(currentTempC); Serial.print("C | ");
     Serial.print("Gas: "); Serial.print(currentGasValue); Serial.print(" | ");
     Serial.print("Flame: "); Serial.print(currentFlameValue); Serial.print(" | ");
@@ -117,7 +122,7 @@ void loop() {
   }
 
   // =========================================================
-  // TASK 2: PROCESS MULTIZONE ToF DATA (CONTINUOUSLY)
+  // TASK 2: PROCESS MULTI-LANE ToF DATA (CONTINUOUSLY)
   // =========================================================
   if (tofSuccess) {
     VL53L8CX_ResultsData results;
@@ -128,9 +133,11 @@ void loop() {
     if (dataReady) {
       sensor.get_ranging_data(&results);
 
-      bool zoneA_active = false; // "Front" half
-      bool zoneB_active = false; // "Back" half
+      // Arrays to track activity in each of the 4 columns
+      bool laneA[4] = {false, false, false, false}; // Entry side of the lane
+      bool laneB[4] = {false, false, false, false}; // Exit side of the lane
 
+      // Map the 4x4 grid into our lanes
       for (int y = 0; y < 4; y++) {
         for (int x = 0; x < 4; x++) {
           int i = x + (y * 4); 
@@ -138,71 +145,111 @@ void loop() {
           uint8_t status = results.target_status[i];
 
           if ((status == 5 || status == 6 || status == 9) && distance > 0 && distance < PERSON_THRESHOLD_MM) {
-            if (y < 2) zoneA_active = true;
-            else zoneB_active = true;
+            if (y < 2) laneA[x] = true; // Top two rows
+            else laneB[x] = true;       // Bottom two rows
           }
         }
       }
 
-      // --- State Machine Logic ---
-      if (currentState == 0) {
-        if (zoneA_active && !zoneB_active) currentState = 1; 
-        if (!zoneA_active && zoneB_active) currentState = 3; 
-      }
-      else if (currentState == 1) {
-        if (zoneA_active && zoneB_active) currentState = 2; 
-        if (!zoneA_active && zoneB_active) currentState = 3; 
-        if (!zoneA_active && !zoneB_active) currentState = 0; 
-      }
-      else if (currentState == 2) {
-        if (!zoneA_active && zoneB_active) currentState = 3; 
-        if (zoneA_active && !zoneB_active) currentState = 1; 
-        if (!zoneA_active && !zoneB_active) currentState = 0; 
-      }
-      else if (currentState == 3) {
-        if (!zoneA_active && !zoneB_active) {
-          totalEntries++;
-          totalInside++;
-          currentState = 0; 
-        }
-        if (zoneA_active && zoneB_active) currentState = 2; 
-        if (zoneA_active && !zoneB_active) {
-          totalExits++;
-          totalInside--;
-          currentState = 0; 
+      unsigned long currentMillis = millis();
+      bool globalA = false; // Just for OLED indicators
+      bool globalB = false;
+
+      // --- Process 4 Independent State Machines ---
+      for (int x = 0; x < 4; x++) {
+        if (laneA[x]) globalA = true;
+        if (laneB[x]) globalB = true;
+
+        bool A = laneA[x];
+        bool B = laneB[x];
+
+        // States: 0=Empty, 1=EntryStart, 2=EntryMid, 3=EntryLeave
+        //         4=ExitStart, 5=ExitMid, 6=ExitLeave
+        switch(laneState[x]) {
+          case 0: // Empty
+            if (A && !B) laneState[x] = 1;
+            else if (!A && B) laneState[x] = 4;
+            break;
+            
+          case 1: // Entry Started
+            if (A && B) laneState[x] = 2;
+            else if (!A && B) laneState[x] = 3;
+            else if (!A && !B) laneState[x] = 0;
+            break;
+            
+          case 2: // Entry Middle
+            if (!A && B) laneState[x] = 3;
+            else if (A && !B) laneState[x] = 1;
+            else if (!A && !B) laneState[x] = 0;
+            break;
+            
+          case 3: // Entry Leaving
+            if (!A && !B) {
+              // Successfully walked through! Check cooldown to prevent double-counting
+              if (currentMillis - lastEntryTime > EVENT_COOLDOWN_MS) {
+                totalEntries++;
+                totalInside++;
+                lastEntryTime = currentMillis;
+              }
+              laneState[x] = 0;
+            }
+            else if (A && B) laneState[x] = 2;
+            else if (A && !B) laneState[x] = 1;
+            break;
+
+          case 4: // Exit Started
+            if (A && B) laneState[x] = 5;
+            else if (A && !B) laneState[x] = 6;
+            else if (!A && !B) laneState[x] = 0;
+            break;
+
+          case 5: // Exit Middle
+            if (A && !B) laneState[x] = 6;
+            else if (!A && B) laneState[x] = 4;
+            else if (!A && !B) laneState[x] = 0;
+            break;
+
+          case 6: // Exit Leaving
+            if (!A && !B) {
+              if (currentMillis - lastExitTime > EVENT_COOLDOWN_MS) {
+                totalExits++;
+                totalInside--;
+                lastExitTime = currentMillis;
+              }
+              laneState[x] = 0;
+            }
+            else if (A && B) laneState[x] = 5;
+            else if (!A && B) laneState[x] = 4;
+            break;
         }
       }
 
       if (totalInside < 0) totalInside = 0;
 
       // =========================================================
-      // TASK 3: UPDATE OLED UI WITH ALL DATA
+      // TASK 3: UPDATE OLED UI 
       // =========================================================
       display.clearDisplay();
       
-      // Top Row: Status
       display.setTextSize(1);
       display.setCursor(0, 0);
       display.print("CrowdSense AP Active");
       
-      // Sensor Status Indicators (Top Right)
-      display.fillRect(105, 0, 8, 8, zoneA_active ? SSD1306_WHITE : SSD1306_BLACK);
-      display.fillRect(115, 0, 8, 8, zoneB_active ? SSD1306_WHITE : SSD1306_BLACK);
+      // Global Activity Indicators
+      display.fillRect(105, 0, 8, 8, globalA ? SSD1306_WHITE : SSD1306_BLACK);
+      display.fillRect(115, 0, 8, 8, globalB ? SSD1306_WHITE : SSD1306_BLACK);
 
-      // Middle Row: People Count
       display.setTextSize(2);
       display.setCursor(0, 15);
       display.print("IN: ");
       display.print(totalInside);
 
-      // Environmental Data
       display.setTextSize(1);
       display.setCursor(0, 35);
       display.print("T:"); display.print(currentTempC, 1); display.print("C ");
       display.print("G:"); display.print(currentGasValue); display.print(" ");
       display.print("F:"); display.print(currentFlameValue);
       
-      // Bottom Row: Stats
       display.setCursor(0, 50);
       display.print("Tot In:"); display.print(totalEntries);
       display.print(" Out:"); display.print(totalExits);
