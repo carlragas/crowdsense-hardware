@@ -1,11 +1,11 @@
 #include <Wire.h>
+#include <vl53l8cx.h> // New ToF Library
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_GFX.h>
-#include <VL53L1X.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <WiFi.h>
-//ssss
+
 // ============ CONFIGURATION ============
 #define I2C_SDA 21
 #define I2C_SCL 22
@@ -16,294 +16,245 @@
 #define ONE_WIRE_BUS 4
 #define FLAME_DIGITAL 5
 #define FLAME_ANALOG 34
-#define GAS_DIGITAL 32
+#define GAS_DIGITAL 33
 #define GAS_ANALOG 35
 
-// WiFi Access Point Configuration
-const char* apSSID = "ESP32_CrowdSense";  // AP name you'll see on your phone
-const char* apPassword = "12345678";       // Password (min 8 characters)
-
+// --- Object Initialization ---
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-VL53L1X tofSensor;
+VL53L8CX sensor(&Wire, -1); 
 OneWire oneWire(ONE_WIRE_BUS);
-DallasTemperature tempSensor(&oneWire);
-DeviceAddress tempAddress;
+DallasTemperature sensors(&oneWire);
 
-int flameBaseline = 0;
-int gasBaseline = 0;
-String macAddress = "";
+// --- Global Variables ---
+bool tofSuccess = false;
 
-// ============ SETUP ============
+// People Counting Variables
+const int PERSON_THRESHOLD_MM = 1500; 
+int totalInside = 0;
+int totalEntries = 0;
+int totalExits = 0;
+
+// MULTI-LANE TRACKING: 4 separate state machines for columns 0, 1, 2, and 3
+int laneState[4] = {0, 0, 0, 0}; 
+
+// Cooldown timers to prevent a single person triggering multiple lanes at once
+unsigned long lastEntryTime = 0;
+unsigned long lastExitTime = 0;
+const int EVENT_COOLDOWN_MS = 800; // Ignore duplicate events within 800ms
+
+// Environmental Variables
+float currentTempC = 0.0;
+int currentGasValue = 0;
+int currentFlameValue = 0;
+unsigned long lastEnvReadTime = 0; 
+
 void setup() {
   Serial.begin(115200);
-  delay(1000);
-  
-  Serial.println("\n\n=== 4-IN-1 SENSOR SYSTEM WITH WiFi ===");
-  
-  // Get and display MAC address
-  getMACAddress();
-  
-  // Initialize WiFi Access Point
-  initWiFiAP();
-  
+  delay(1000); 
+  Serial.println("\n--- System Booting ---");
+
+  // 1. Initialize I2C
   Wire.begin(I2C_SDA, I2C_SCL);
-  
-  // Initialize OLED
+  Wire.setClock(400000); 
+
+  // 2. Initialize OLED
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("OLED not found! Check 0x3C or 0x3D");
-  }
-  
-  showMessage("Initializing...", "Sensors & WiFi", "");
-  
-  initSensors();
-  
-  showMessage("All Sensors OK!", "WiFi AP Active", macAddress.substring(0, 17));
-  delay(3000);
-}
-
-// ============ NEW: WiFi Access Point Function ============
-void initWiFiAP() {
-  Serial.println("\n--- WiFi Access Point Setup ---");
-  
-  // Set WiFi mode to Access Point
-  WiFi.mode(WIFI_AP);
-  
-  // Configure the AP
-  Serial.print("Setting up AP: ");
-  Serial.println(apSSID);
-  
-  // Start AP with the configured SSID and password
-  WiFi.softAP(apSSID, apPassword);
-  
-  // Get and display AP IP address
-  IPAddress IP = WiFi.softAPIP();
-  Serial.print("AP IP address: ");
-  Serial.println(IP);
-  
-  Serial.print("MAC Address: ");
-  Serial.println(macAddress);
-  
-  Serial.println("WiFi AP Started!");
-  Serial.println("Connect to: " + String(apSSID));
-  Serial.println("Password: " + String(apPassword));
-  Serial.println("------------------------------\n");
-}
-
-// ============ NEW: Get MAC Address ============
-void getMACAddress() {
-  uint8_t mac[6];
-  WiFi.macAddress(mac);
-  
-  // Format MAC address as string
-  char macStr[18];
-  snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
-           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-  
-  macAddress = String(macStr);
-  
-  Serial.println("\n=== DEVICE INFORMATION ===");
-  Serial.print("MAC Address: ");
-  Serial.println(macAddress);
-  Serial.print("ESP32 Chip Model: ");
-  Serial.println(ESP.getChipModel());
-  Serial.print("Flash Size: ");
-  Serial.print(ESP.getFlashChipSize() / (1024 * 1024));
-  Serial.println(" MB");
-  Serial.println("===========================\n");
-}
-
-// ============ SENSOR INIT ============
-void initSensors() {
-  // ToF
-  Serial.print("VL53L1X: ");
-  if (tofSensor.init()) {
-    tofSensor.setDistanceMode(VL53L1X::Long);
-    tofSensor.setMeasurementTimingBudget(50000);
-    tofSensor.startContinuous(50);
-    Serial.println("OK");
+    Serial.println("OLED Failed!");
   } else {
-    Serial.println("FAILED");
+    display.clearDisplay();
+    display.setTextColor(WHITE);
+    display.setCursor(0,0);
+    display.println("Booting System...");
+    display.display();
   }
+
+  // 3. Initialize VL53L8CX 
+  display.println("Starting ToF...");
+  display.display();
   
-  // Temperature
-  Serial.print("DS18B20: ");
-  tempSensor.begin();
-  if (tempSensor.getDeviceCount() > 0) {
-    tempSensor.getAddress(tempAddress, 0);
-    tempSensor.setResolution(tempAddress, 12);
-    Serial.println("OK");
+  sensor.begin();
+  sensor.off();
+  sensor.on();
+  
+  if (sensor.init() != 0) {
+    Serial.println("CRITICAL: VL53L8CX sensor not found!");
+    tofSuccess = false;
   } else {
-    Serial.println("FAILED");
+    sensor.set_resolution(VL53L8CX_RESOLUTION_4X4);
+    sensor.set_ranging_frequency_hz(15);
+    sensor.start_ranging();
+    tofSuccess = true;
+    Serial.println("VL53L8CX Initialized.");
   }
-  
-  // Flame sensor
-  Serial.print("KY-026: ");
+
+  // 4. Initialize DS18B20
+  sensors.begin();
+  Serial.println("DS18B20 Initialized.");
+
+  // 5. Configure Digital Pins
   pinMode(FLAME_DIGITAL, INPUT);
-  pinMode(FLAME_ANALOG, INPUT);
-  
-  long sum = 0;
-  for(int i = 0; i < 50; i++) {
-    sum += analogRead(FLAME_ANALOG);
-    delay(10);
-  }
-  flameBaseline = sum / 50;
-  Serial.printf("Baseline=%d OK\n", flameBaseline);
-  
-  // Gas sensor
-  Serial.print("MQ-2: ");
   pinMode(GAS_DIGITAL, INPUT);
-  pinMode(GAS_ANALOG, INPUT);
+
+  // 6. Setup WiFi Access Point
+  WiFi.softAP("ESP32_CrowdSense", "12345678");
+  Serial.println("WiFi AP Ready.");
   
-  sum = 0;
-  for(int i = 0; i < 50; i++) {
-    sum += analogRead(GAS_ANALOG);
-    delay(10);
-  }
-  gasBaseline = sum / 50;
-  Serial.printf("Baseline=%d OK\n", gasBaseline);
+  Serial.println("--- Setup Complete ---");
 }
 
-// ============ MAIN LOOP ============
 void loop() {
-  // Read all sensors
-  int distance = readToF();
-  float temperature = readTemp();
-  int flameValue = analogRead(FLAME_ANALOG);
-  int gasValue = analogRead(GAS_ANALOG);
-  
-  bool flameDetected = (flameValue < flameBaseline - 100);
-  bool gasAlarm = (gasValue > gasBaseline + 200);
-  
-  int flamePercent = constrain(map(flameValue, 0, flameBaseline, 100, 0), 0, 100);
-  int gasPercent = constrain(map(gasValue, gasBaseline, 4095, 0, 100), 0, 100);
-  
-  // Print to Serial with WiFi info
-  printReadings(distance, temperature, flamePercent, flameDetected, gasPercent, gasAlarm);
-  
-  // Update display
-  updateDisplay(distance, temperature, flamePercent, flameDetected, gasPercent, gasAlarm);
-  
-  delay(200);
-}
-
-// ============ ENHANCED SERIAL OUTPUT ============
-void printReadings(int distance, float temp, int flame, bool flameDetected, int gas, bool gasAlarm) {
-  static unsigned long lastPrint = 0;
-  
-  if (millis() - lastPrint >= 2000) { // Print every 2 seconds
-    Serial.println("\n=== SENSOR READINGS ===");
-    Serial.printf("ToF: %d mm\n", distance);
-    Serial.printf("Temp: %.1f °C\n", temp);
-    Serial.printf("Flame: %d%% %s\n", flame, flameDetected ? "🔥 DETECTED" : "✓ safe");
-    Serial.printf("Gas: %d%% %s\n", gas, gasAlarm ? "⚠️ ALARM" : "✓ normal");
+  // =========================================================
+  // TASK 1: READ ENVIRONMENTAL SENSORS (ONCE PER SECOND)
+  // =========================================================
+  if (millis() - lastEnvReadTime >= 1000) {
+    lastEnvReadTime = millis();
     
-    // WiFi Status
-    Serial.println("\n--- WiFi AP Status ---");
-    Serial.print("SSID: ");
-    Serial.println(apSSID);
-    Serial.print("IP Address: ");
-    Serial.println(WiFi.softAPIP());
-    Serial.print("MAC Address: ");
-    Serial.println(macAddress);
-    Serial.print("Connected Stations: ");
-    Serial.println(WiFi.softAPgetStationNum());
-    Serial.println("----------------------\n");
+    currentFlameValue = analogRead(FLAME_ANALOG);
+    currentGasValue = analogRead(GAS_ANALOG);
     
-    lastPrint = millis();
-  }
-}
+    sensors.requestTemperatures();
+    currentTempC = sensors.getTempCByIndex(0);
 
-// ============ SENSOR READING FUNCTIONS ============
-int readToF() {
-  tofSensor.read();
-  return tofSensor.ranging_data.range_mm;
-}
-
-float readTemp() {
-  tempSensor.requestTemperatures();
-  return tempSensor.getTempC(tempAddress);
-}
-
-// ============ SIMPLIFIED DISPLAY WITH WiFi INFO ============
-void updateDisplay(int distance, float temp, int flame, bool flameDetected, int gas, bool gasAlarm) {
-  display.clearDisplay();
-  
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  
-  // Line 1: WiFi Symbol and MAC short
-  display.setCursor(0, 0);
-  display.print("📶 ");
-  display.print(macAddress.substring(9, 17)); // Show last 8 chars of MAC
-  display.print(" ");
-  display.print(WiFi.softAPgetStationNum());
-  display.print(" conn");
-  
-  // Line 2: Distance and Temp
-  display.setCursor(0, 12);
-  display.print("D:");
-  display.print(distance);
-  display.print("mm T:");
-  display.print(temp, 1);
-  display.println("C");
-  
-  // Line 3: Flame
-  display.setCursor(0, 24);
-  display.print("Flame:");
-  if (flameDetected) {
-    display.print("🔥");
-  } else {
-    display.print("✓");
+    Serial.print("Temp: "); Serial.print(currentTempC); Serial.print("C | ");
+    Serial.print("Gas: "); Serial.print(currentGasValue); Serial.print(" | ");
+    Serial.print("Flame: "); Serial.print(currentFlameValue); Serial.print(" | ");
+    Serial.print("People Inside: "); Serial.println(totalInside);
   }
-  display.print(flame);
-  display.print("%");
-  
-  // Line 4: Gas
-  display.setCursor(64, 24);
-  display.print("Gas:");
-  if (gasAlarm) {
-    display.print("⚠️");
-  } else {
-    display.print("✓");
-  }
-  display.print(gas);
-  display.print("%");
-  
-  // Bar graphs
-  // Flame bar
-  display.drawRect(0, 36, 60, 8, SSD1306_WHITE);
-  display.fillRect(0, 36, map(flame, 0, 100, 0, 60), 8, SSD1306_WHITE);
-  
-  // Gas bar
-  display.drawRect(68, 36, 60, 8, SSD1306_WHITE);
-  display.fillRect(68, 36, map(gas, 0, 100, 0, 60), 8, SSD1306_WHITE);
-  
-  // Status line
-  display.drawLine(0, 50, 127, 50, SSD1306_WHITE);
-  
-  display.setCursor(0, 52);
-  if (flameDetected || gasAlarm) {
-    display.print("⚠️ DANGER! ");
-  } else {
-    display.print("✓ All Normal ");
-  }
-  
-  // Show AP name on bottom right
-  display.setCursor(70, 52);
-  display.print(apSSID);
-  
-  display.display();
-}
 
-void showMessage(String line1, String line2, String line3) {
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 10);
-  display.println(line1);
-  display.setCursor(0, 25);
-  display.println(line2);
-  display.setCursor(0, 40);
-  display.println(line3);
-  display.display();
+  // =========================================================
+  // TASK 2: PROCESS MULTI-LANE ToF DATA (CONTINUOUSLY)
+  // =========================================================
+  if (tofSuccess) {
+    VL53L8CX_ResultsData results;
+    uint8_t dataReady = 0;
+
+    sensor.check_data_ready(&dataReady);
+
+    if (dataReady) {
+      sensor.get_ranging_data(&results);
+
+      // Arrays to track activity in each of the 4 columns
+      bool laneA[4] = {false, false, false, false}; // Entry side of the lane
+      bool laneB[4] = {false, false, false, false}; // Exit side of the lane
+
+      // Map the 4x4 grid into our lanes
+      for (int y = 0; y < 4; y++) {
+        for (int x = 0; x < 4; x++) {
+          int i = x + (y * 4); 
+          int distance = results.distance_mm[i];
+          uint8_t status = results.target_status[i];
+
+          if ((status == 5 || status == 6 || status == 9) && distance > 0 && distance < PERSON_THRESHOLD_MM) {
+            if (y < 2) laneA[x] = true; // Top two rows
+            else laneB[x] = true;       // Bottom two rows
+          }
+        }
+      }
+
+      unsigned long currentMillis = millis();
+      bool globalA = false; // Just for OLED indicators
+      bool globalB = false;
+
+      // --- Process 4 Independent State Machines ---
+      for (int x = 0; x < 4; x++) {
+        if (laneA[x]) globalA = true;
+        if (laneB[x]) globalB = true;
+
+        bool A = laneA[x];
+        bool B = laneB[x];
+
+        // States: 0=Empty, 1=EntryStart, 2=EntryMid, 3=EntryLeave
+        //         4=ExitStart, 5=ExitMid, 6=ExitLeave
+        switch(laneState[x]) {
+          case 0: // Empty
+            if (A && !B) laneState[x] = 1;
+            else if (!A && B) laneState[x] = 4;
+            break;
+            
+          case 1: // Entry Started
+            if (A && B) laneState[x] = 2;
+            else if (!A && B) laneState[x] = 3;
+            else if (!A && !B) laneState[x] = 0;
+            break;
+            
+          case 2: // Entry Middle
+            if (!A && B) laneState[x] = 3;
+            else if (A && !B) laneState[x] = 1;
+            else if (!A && !B) laneState[x] = 0;
+            break;
+            
+          case 3: // Entry Leaving
+            if (!A && !B) {
+              // Successfully walked through! Check cooldown to prevent double-counting
+              if (currentMillis - lastEntryTime > EVENT_COOLDOWN_MS) {
+                totalEntries++;
+                totalInside++;
+                lastEntryTime = currentMillis;
+              }
+              laneState[x] = 0;
+            }
+            else if (A && B) laneState[x] = 2;
+            else if (A && !B) laneState[x] = 1;
+            break;
+
+          case 4: // Exit Started
+            if (A && B) laneState[x] = 5;
+            else if (A && !B) laneState[x] = 6;
+            else if (!A && !B) laneState[x] = 0;
+            break;
+
+          case 5: // Exit Middle
+            if (A && !B) laneState[x] = 6;
+            else if (!A && B) laneState[x] = 4;
+            else if (!A && !B) laneState[x] = 0;
+            break;
+
+          case 6: // Exit Leaving
+            if (!A && !B) {
+              if (currentMillis - lastExitTime > EVENT_COOLDOWN_MS) {
+                totalExits++;
+                totalInside--;
+                lastExitTime = currentMillis;
+              }
+              laneState[x] = 0;
+            }
+            else if (A && B) laneState[x] = 5;
+            else if (!A && B) laneState[x] = 4;
+            break;
+        }
+      }
+
+      if (totalInside < 0) totalInside = 0;
+
+      // =========================================================
+      // TASK 3: UPDATE OLED UI 
+      // =========================================================
+      display.clearDisplay();
+      
+      display.setTextSize(1);
+      display.setCursor(0, 0);
+      display.print("CrowdSense AP Active");
+      
+      // Global Activity Indicators
+      display.fillRect(105, 0, 8, 8, globalA ? SSD1306_WHITE : SSD1306_BLACK);
+      display.fillRect(115, 0, 8, 8, globalB ? SSD1306_WHITE : SSD1306_BLACK);
+
+      display.setTextSize(2);
+      display.setCursor(0, 15);
+      display.print("IN: ");
+      display.print(totalInside);
+
+      display.setTextSize(1);
+      display.setCursor(0, 35);
+      display.print("T:"); display.print(currentTempC, 1); display.print("C ");
+      display.print("G:"); display.print(currentGasValue); display.print(" ");
+      display.print("F:"); display.print(currentFlameValue);
+      
+      display.setCursor(0, 50);
+      display.print("Tot In:"); display.print(totalEntries);
+      display.print(" Out:"); display.print(totalExits);
+
+      display.display();
+    }
+  }
 }
