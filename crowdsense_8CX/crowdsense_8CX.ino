@@ -127,6 +127,14 @@ void loop() {
     Serial.print("People Inside: "); Serial.println(totalInside);
   }
 
+  if (currentFlameValue <= 1000 && currentGasValue >= 500) {
+    digitalWrite(SIREN_2, HIGH);
+    }
+  else {
+    digitalWrite(SIREN_2, LOW);
+
+  }
+
   // =========================================================
   // TASK 2: PROCESS MULTI-LANE ToF DATA (CONTINUOUSLY)
   // =========================================================
@@ -231,10 +239,6 @@ void loop() {
       }
 
       if (totalInside < 0) totalInside = 0;
-
-      if (currentFlameValue <= 1000 && currentGasValue >= 500) {
-        digitalWrite(SIREN_2, HIGH);
-      }
 
       // =========================================================
       // TASK 3: UPDATE OLED UI 
