@@ -1,34 +1,35 @@
 #include <Wire.h>
 #include <vl53l8cx.h> // New ToF Library
-#include <Adafruit_SSD1306.h>
-#include <Adafruit_GFX.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <WiFi.h>
+#include <Firebase_ESP_Client.h>
 
 // ============ CONFIGURATION ============
 #define I2C_SDA 21
 #define I2C_SCL 22
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
 #define OLED_RESET -1
 
 #define ONE_WIRE_BUS 4
-#define FLAME_DIGITAL 5
+#define BACKUP_FLAME_DIGITAL 5
+#define MAIN_FLAME 14
 #define SIREN_1 19
 #define SIREN_2 18
-#define FLAME_ANALOG 34
+#define BACKUP_FLAME_ANALOG 34
 #define GAS_DIGITAL 33
 #define GAS_ANALOG 35
 
 // --- Object Initialization ---
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 VL53L8CX sensor(&Wire, -1); 
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
+FirebaseData fbdo;
+FirebaseAuth auth;
+FirebaseConfig config;
 
 // --- Global Variables ---
 bool tofSuccess = false;
+String deviceMAC ="D4:E9:F4:FA:DF:5C";
 
 // People Counting Variables
 const int PERSON_THRESHOLD_MM = 1500; 
@@ -47,7 +48,8 @@ const int EVENT_COOLDOWN_MS = 800; // Ignore duplicate events within 800ms
 // Environmental Variables
 float currentTempC = 0.0;
 int currentGasValue = 0;
-int currentFlameValue = 0;
+int currentBackupFlameValue = 0;
+int currentMainFlameValue = 0;
 unsigned long lastEnvReadTime = 0; 
 
 void setup() {
@@ -58,22 +60,7 @@ void setup() {
   // 1. Initialize I2C
   Wire.begin(I2C_SDA, I2C_SCL);
   Wire.setClock(400000); 
-
-  // 2. Initialize OLED
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("OLED Failed!");
-  } else {
-    display.clearDisplay();
-    display.setTextColor(WHITE);
-    display.setCursor(0,0);
-    display.println("Booting System...");
-    display.display();
-  }
-
   // 3. Initialize VL53L8CX 
-  display.println("Starting ToF...");
-  display.display();
-  
   sensor.begin();
   sensor.off();
   sensor.on();
@@ -94,7 +81,8 @@ void setup() {
   Serial.println("DS18B20 Initialized.");
 
   // 5. Configure Digital Pins
-  pinMode(FLAME_DIGITAL, INPUT);
+  pinMode(BACKUP_FLAME_DIGITAL, INPUT);
+  pinMode(MAIN_FLAME, INPUT_PULLUP);
   pinMode(GAS_DIGITAL, INPUT);
   pinMode(SIREN_1, OUTPUT);
   pinMode(SIREN_2, OUTPUT);
@@ -102,10 +90,15 @@ void setup() {
   digitalWrite(SIREN_2, LOW);
 
   // 6. Setup WiFi Access Point
-  WiFi.softAP("ESP32_CrowdSense", "12345678");
-  Serial.println("WiFi AP Ready.");
-  
-  Serial.println("--- Setup Complete ---");
+  WiFi.begin("PLDTHOMEFIBRHazel", "Mastercarl16!");
+  if (WiFi.status() != WL_CONNECTED){
+    Serial.println("Unable to connect to network");
+  }
+
+  config.database_url="https://crowdsense-db-default-rtdb.asia-southeast1.firebasedatabase.app/";
+  config.signer.tokens.legacy_token="crowdsense-db-default-rtdb	5mGeiwSA9PLndbFmJZtC8x7a9U78VaM0H21nh1nd";
+  Firebase.begin(&config, &auth);
+  Firebase.reconnectWiFi(true);
 }
 
 void loop() {
@@ -115,7 +108,8 @@ void loop() {
   if (millis() - lastEnvReadTime >= 1000) {
     lastEnvReadTime = millis();
     
-    currentFlameValue = analogRead(FLAME_ANALOG);
+    currentBackupFlameValue = analogRead(BACKUP_FLAME_ANALOG);
+    currentMainFlameValue = digitalRead(MAIN_FLAME);
     currentGasValue = analogRead(GAS_ANALOG);
     
     sensors.requestTemperatures();
@@ -123,16 +117,24 @@ void loop() {
 
     Serial.print("Temp: "); Serial.print(currentTempC); Serial.print("C | ");
     Serial.print("Gas: "); Serial.print(currentGasValue); Serial.print(" | ");
-    Serial.print("Flame: "); Serial.print(currentFlameValue); Serial.print(" | ");
+    Serial.print("Flame 1: "); Serial.print(currentBackupFlameValue); Serial.print(" | ");
+    Serial.print("Flame 2: "); Serial.print(currentMainFlameValue); Serial.print(" | ");
     Serial.print("People Inside: "); Serial.println(totalInside);
   }
 
-  if (currentFlameValue <= 1000 && currentGasValue >= 500) {
+  if (currentMainFlameValue <= 1000 && currentGasValue >= 500) {
     digitalWrite(SIREN_2, HIGH);
     }
   else {
     digitalWrite(SIREN_2, LOW);
 
+  }
+
+  if (currentBackupFlameValue <= 1000 && currentGasValue >= 500){
+    digitalWrite(SIREN_2, HIGH);
+  }
+  else {
+    digitalWrite(SIREN_2, LOW);
   }
 
   // =========================================================
@@ -239,36 +241,6 @@ void loop() {
       }
 
       if (totalInside < 0) totalInside = 0;
-
-      // =========================================================
-      // TASK 3: UPDATE OLED UI 
-      // =========================================================
-      display.clearDisplay();
-      
-      display.setTextSize(1);
-      display.setCursor(0, 0);
-      display.print("CrowdSense AP Active");
-      
-      // Global Activity Indicators
-      display.fillRect(105, 0, 8, 8, globalA ? SSD1306_WHITE : SSD1306_BLACK);
-      display.fillRect(115, 0, 8, 8, globalB ? SSD1306_WHITE : SSD1306_BLACK);
-
-      display.setTextSize(2);
-      display.setCursor(0, 15);
-      display.print("IN: ");
-      display.print(totalInside);
-
-      display.setTextSize(1);
-      display.setCursor(0, 35);
-      display.print("T:"); display.print(currentTempC, 1); display.print("C ");
-      display.print("G:"); display.print(currentGasValue); display.print(" ");
-      display.print("F:"); display.print(currentFlameValue);
-      
-      display.setCursor(0, 50);
-      display.print("Tot In:"); display.print(totalEntries);
-      display.print(" Out:"); display.print(totalExits);
-
-      display.display();
     }
   }
 }
