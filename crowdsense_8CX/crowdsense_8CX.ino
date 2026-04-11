@@ -29,7 +29,7 @@
 #define FIREBASE_LEGACY_TOKEN "5mGeiwSA9PLndbFmJZtC8x7a9U78VaM0H21nh1nd"
 
 // Data send interval (milliseconds)
-const unsigned long FIREBASE_SEND_INTERVAL = 2000; // Send data every 2 seconds
+const unsigned long FIREBASE_SEND_INTERVAL = 900000; // Send data every 2 seconds
 unsigned long lastFirebaseSendTime = 0;
 
 // --- Object Initialization ---
