@@ -3,6 +3,9 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <WiFiManager.h>
+#include <WiFi.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
 #include <Firebase_ESP_Client.h>
 
 // Provide the token generation process info
@@ -19,7 +22,7 @@
 #define SIREN_2 18
 #define BACKUP_FLAME_ANALOG 34
 #define GAS_DIGITAL 33
-#define GAS_ANALOG 35
+#define GAS 35
 
 // Firebase Configuration
 #define FIREBASE_HOST "https://crowdsense-db-default-rtdb.asia-southeast1.firebasedatabase.app/"
@@ -64,6 +67,10 @@ unsigned long lastEnvReadTime = 0;
 
 // Firebase connection status
 bool firebaseConnected = false;
+
+// Define NTP Client to get time
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org");
 
 void setup() {
   Serial.begin(115200);
@@ -141,11 +148,16 @@ void setup() {
       String deviceStatusPath = "/sensor_data/" + deviceMAC + "/status";
       Firebase.RTDB.setString(&fbdo, deviceStatusPath.c_str(), "online");
       Firebase.RTDB.setInt(&fbdo, "/sensor_data/" + deviceMAC + "/timestamp", millis());
+      timeClient.begin();
+      // Set offset time in seconds to adjust for your timezone 
+      // GMT+8 (Philippines) = 8 * 60 * 60 = 28800
+      timeClient.setTimeOffset(28800);
     } else {
       Serial.println("Firebase connection failed!");
       firebaseConnected = false;
     }
   }
+  
   
   Serial.println("--- Setup Complete ---");
 }
@@ -158,7 +170,7 @@ void loop() {
     lastEnvReadTime = millis();
     
     currentBackupFlameValue = analogRead(BACKUP_FLAME_ANALOG);
-    currentGasValue = analogRead(GAS_ANALOG);
+    currentGasValue = analogRead(GAS);
     
     sensors.requestTemperatures();
     currentTempC = sensors.getTempCByIndex(0);
@@ -297,7 +309,7 @@ void loop() {
       }
       
       // Send Gas value (analog and percentage)
-      String gasPath = basePath + "gas_analog";
+      String gasPath = basePath + "gas";
       if (Firebase.RTDB.setInt(&fbdo, gasPath.c_str(), currentGasValue)) {
         Serial.print("✓ Gas analog sent: ");
         Serial.println(currentGasValue);
@@ -312,7 +324,7 @@ void loop() {
       Firebase.RTDB.setInt(&fbdo, gasPercentPath.c_str(), gasPercentage);
       
       // Send Flame value
-      String flamePath = basePath + "flame_analog";
+      String flamePath = basePath + "flame";
       if (Firebase.RTDB.setInt(&fbdo, flamePath.c_str(), currentBackupFlameValue)) {
         Serial.print("✓ Flame analog sent: ");
         Serial.println(currentBackupFlameValue);
@@ -335,8 +347,14 @@ void loop() {
       Firebase.RTDB.setInt(&fbdo, exitsPath.c_str(), totalExits);
       
       // Send timestamp
-      String timestampPath = basePath + "last_update";
-      Firebase.RTDB.setInt(&fbdo, timestampPath.c_str(), millis());
+      unsigned long epochTime = timeClient.getEpochTime();
+  
+      // To get currentEpochMillis (Milliseconds)
+      // Note: Most NTP libraries return seconds. We multiply by 1000 
+      // and add the internal millis() remainder for precision.
+      long long currentEpochMillis = ((long long)epochTime * 1000) + (millis() % 1000);
+      String timestampPath = basePath + "last_updated";
+      Firebase.RTDB.setInt(&fbdo, timestampPath.c_str(), currentEpochMillis);
       
       // Send flame and gas digital status (for alarms)
       String flameDigitalPath = basePath + "flame_detected";
