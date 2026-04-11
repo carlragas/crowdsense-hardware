@@ -6,7 +6,7 @@
 #include <DallasTemperature.h>
 #include <WiFi.h>
 
-// --- Pin Configuration ---
+// ============ CONFIGURATION ============
 #define I2C_SDA 21
 #define I2C_SCL 22
 #define SCREEN_WIDTH 128
@@ -15,6 +15,8 @@
 
 #define ONE_WIRE_BUS 4
 #define FLAME_DIGITAL 5
+#define SIREN_1 19
+#define SIREN_2 18
 #define FLAME_ANALOG 34
 #define GAS_DIGITAL 33
 #define GAS_ANALOG 35
@@ -94,6 +96,10 @@ void setup() {
   // 5. Configure Digital Pins
   pinMode(FLAME_DIGITAL, INPUT);
   pinMode(GAS_DIGITAL, INPUT);
+  pinMode(SIREN_1, OUTPUT);
+  pinMode(SIREN_2, OUTPUT);
+  digitalWrite(SIREN_1, LOW);
+  digitalWrite(SIREN_2, LOW);
 
   // 6. Setup WiFi Access Point
   WiFi.softAP("ESP32_CrowdSense", "12345678");
@@ -119,6 +125,14 @@ void loop() {
     Serial.print("Gas: "); Serial.print(currentGasValue); Serial.print(" | ");
     Serial.print("Flame: "); Serial.print(currentFlameValue); Serial.print(" | ");
     Serial.print("People Inside: "); Serial.println(totalInside);
+  }
+
+  if (currentFlameValue <= 1000 && currentGasValue >= 500) {
+    digitalWrite(SIREN_2, HIGH);
+    }
+  else {
+    digitalWrite(SIREN_2, LOW);
+
   }
 
   // =========================================================
