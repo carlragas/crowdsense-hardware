@@ -14,8 +14,8 @@
 #define ONE_WIRE_BUS 4
 #define BACKUP_FLAME_DIGITAL 5
 #define MAIN_FLAME 14
-#define SIREN_2 25
-#define SIREN_1 26
+#define SIREN_2 25 //Alert Siren
+#define SIREN_1 26 //Clear Siren
 #define I2C_SDA 21
 #define I2C_SCL 22
 #define UPS_BATT_INDICATOR 32
@@ -55,20 +55,105 @@ const int EVENT_COOLDOWN_MS = 800;
 // Environment Variables
 float currentTempC = 0.0;
 int currentGasValue = 0;
-int currentMainFlameValue = 0;
+bool currentMainFlameValue = 0;
 int currentBackupFlameValue = 0;
 bool esp32Online = true;
 unsigned long lastEnvReadTime = 0; 
+// Siren Variables
+bool sirenAlertActive = false;
+bool sirenClearActive = false;
+unsigned long sirenAlertTimer = 0;
+unsigned long sirenClearTimer = 0;
+const unsigned long sirenAlertDuration = 5000; 
+const unsigned long sirenClearDuration = 60000; 
+
+void connectNetwork(){
+    // WiFi and Firebase Setup
+  WiFi.mode(WIFI_STA);
+  WiFiManager wm;
+  wm.resetSettings();
+  Serial.println("Connecting to WiFi...");
+  bool res = wm.autoConnect("CrowdSense_Main_Ext", "12345678");
+  if (!res) {
+    Serial.println("Failed to establish WiFi connection.");
+    firebaseConnected = false;
+  } else {
+    Serial.println("WiFi connected successfully.");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+    connectDB();
+  }
+}
+
+void connectDB(){
+  // Configure Firebase
+  config.database_url = FIREBASE_HOST;
+  config.signer.tokens.legacy_token = FIREBASE_LEGACY_TOKEN;
+  // Assign the callback function for token generation
+  config.token_status_callback = tokenStatusCallback;
+  Firebase.begin(&config, &auth);
+  Firebase.reconnectWiFi(true);
+  // Test Firebase connection
+  Serial.println("Testing Firebase connection...");
+  if (Firebase.ready()) {
+    firebaseConnected = true;
+    Serial.println("Firebase connected successfully!");
+    // Send initial device status
+    String deviceStatusPath = "/sensor_data/" + deviceMAC + "/status";
+    Firebase.RTDB.setString(&fbdo, deviceStatusPath.c_str(), "online");
+    Firebase.RTDB.setInt(&fbdo, "/sensor_data/" + deviceMAC + "/timestamp", millis());
+    timeClient.begin();
+    // Set offset time in seconds to adjust for your timezone 
+    // GMT+8 (Philippines) = 8 * 60 * 60 = 28800
+    timeClient.setTimeOffset(28800);
+    } else {
+      Serial.println("Firebase connection failed!");
+      firebaseConnected = false;
+    }
+}
+
+void triggerAlertSiren(){
+  bool alertStatus = (currentMainFlameValue <= 1000 || currentBackupFlameValue <= 1000) && (currentGasValue >= 600);
+  if (alertStatus && !sirenClearActive) {
+    if  (!sirenAlertActive){
+      sirenAlertActive =  true;
+      digitalWrite(SIREN_2,HIGH);
+    }
+    sirenAlertTimer = millis() + sirenAlertDuration;
+    Serial.println("ALERT ON: Emergency Fire Siren Activated.");
+  }
+
+  if (sirenAlertActive && millis() >= sirenAlertTimer){
+    sirenAlertActive = false;
+    digitalWrite(SIREN_2, LOW);
+    Serial.println("ALERT OFF: Emergency Fire Siren Deactivated.");
+  }
+}
+
+void triggerClearSiren(){
+  bool clearStatus = sirenAlertActive && totalInside == 0;
+  if (clearStatus){
+    if (!sirenClearActive){
+      sirenClearActive = true;
+      digitalWrite(SIREN_1, HIGH);
+      sirenClearTimer = millis() + sirenClearDuration;
+    }
+    Serial.println("AREA CLEAR: All personnel have evacuated the premises.");
+  }
+
+  if (sirenClearActive && millis() >= sirenClearTimer) {
+    sirenClearActive = false;
+    digitalWrite(SIREN_1, LOW);
+  }
+}
 
 void setup() {
   Serial.begin(115200);
   delay(1000); 
   Serial.println("\n--- System Booting ---");
-
   // Initialize I2C for ESP32
   Wire.begin(I2C_SDA, I2C_SCL);
   Wire.setClock(400000); 
-
   // Configure Digital Pins
   pinMode(BACKUP_FLAME_DIGITAL, INPUT);
   pinMode(MAIN_FLAME, INPUT_PULLUP);
@@ -77,10 +162,8 @@ void setup() {
   pinMode(SIREN_2, OUTPUT);
   digitalWrite(SIREN_1, LOW);
   digitalWrite(SIREN_2, LOW);
-
   // Initialize VL53L7CX 
   sensor.begin(); // Setup I2C interface
-  
   if (sensor.init_sensor() != 0) {
     Serial.println("CRITICAL: VL53L7CX sensor not found!");
     tofSuccess = false;
@@ -92,57 +175,10 @@ void setup() {
     tofSuccess = true;
     Serial.println("VL53L7CX Initialized.");
   }
-
   // Initialize DS18B20
   sensors.begin();
   Serial.println("DS18B20 Initialized.");
-
-  // WiFi and Firebase Setup
-  WiFi.mode(WIFI_STA);
-  WiFiManager wm;
-  wm.resetSettings();
-  
-  Serial.println("Connecting to WiFi...");
-  bool res = wm.autoConnect("CrowdSense_Main_Ext", "12345678");
-  
-  if (!res) {
-    Serial.println("Failed to establish WiFi connection.");
-    firebaseConnected = false;
-  } else {
-    Serial.println("WiFi connected successfully.");
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
-    
-    // Configure Firebase
-    config.database_url = FIREBASE_HOST;
-    config.signer.tokens.legacy_token = FIREBASE_LEGACY_TOKEN;
-    
-    // Assign the callback function for token generation
-    config.token_status_callback = tokenStatusCallback;
-    
-    Firebase.begin(&config, &auth);
-    Firebase.reconnectWiFi(true);
-    
-    // Test Firebase connection
-    Serial.println("Testing Firebase connection...");
-    if (Firebase.ready()) {
-      firebaseConnected = true;
-      Serial.println("Firebase connected successfully!");
-      
-      // Send initial device status
-      String deviceStatusPath = "/sensor_data/" + deviceMAC + "/status";
-      Firebase.RTDB.setString(&fbdo, deviceStatusPath.c_str(), "online");
-      Firebase.RTDB.setInt(&fbdo, "/sensor_data/" + deviceMAC + "/timestamp", millis());
-      timeClient.begin();
-      // Set offset time in seconds to adjust for your timezone 
-      // GMT+8 (Philippines) = 8 * 60 * 60 = 28800
-      timeClient.setTimeOffset(28800);
-    } else {
-      Serial.println("Firebase connection failed!");
-      firebaseConnected = false;
-    }
-  }
-
+  connectNetwork();
   Serial.println("--- Setup Complete ---");
 }
 
@@ -154,6 +190,7 @@ void loop() {
     lastEnvReadTime = millis();
     
     currentBackupFlameValue = analogRead(BACKUP_FLAME_ANALOG);
+    currentMainFlameValue = 
     currentGasValue = analogRead(GAS);
     
     sensors.requestTemperatures();
@@ -163,14 +200,6 @@ void loop() {
     Serial.print("Gas: "); Serial.print(currentGasValue); Serial.print(" | ");
     Serial.print("Flame: "); Serial.print(currentBackupFlameValue); Serial.print(" | ");
     Serial.print("People Inside: "); Serial.println(totalInside);
-  }
-
-  if (currentMainFlameValue <= 1000 || currentBackupFlameValue <= 1000) {
-    if (currentGasValue >= 500){
-      digitalWrite(SIREN_2, HIGH);
-    }
-  } else {
-    digitalWrite(SIREN_2, LOW);
   }
 
   // =========================================================
@@ -273,6 +302,9 @@ void loop() {
       if (totalInside < 0) totalInside = 0;
     }
   }
+
+  triggerAlertSiren();
+  triggerClearSiren();
   // =========================================================
   // TASK 3: SEND DATA TO FIREBASE
   // =========================================================
@@ -351,9 +383,10 @@ void loop() {
       Firebase.RTDB.setBool(&fbdo, gasDigitalPath.c_str(), gasDetected);
       
       // Send siren status
-      String sirenPath = basePath + "siren_active";
-      bool sirenActive = (currentBackupFlameValue <= 1000 && currentGasValue >= 500);
-      Firebase.RTDB.setBool(&fbdo, sirenPath.c_str(), sirenActive);
+      String sirenAlertPath = basePath + "siren_alert_active";
+      Firebase.RTDB.setBool(&fbdo, sirenAlertPath.c_str(), sirenAlertActive);
+      String sirenClearPath = basePath + "siren_clear_active";
+      Firebase.RTDB.setBool(&fbdo, sirenClearPath.c_str(), sirenClearActive);
       
       Serial.println("--- Firebase data update complete ---");
       
