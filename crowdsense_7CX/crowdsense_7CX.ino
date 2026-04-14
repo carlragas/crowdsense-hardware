@@ -1,4 +1,4 @@
-//Libraries
+// Libraries
 #include <Wire.h>
 #include <vl53l7cx_class.h>
 #include <OneWire.h>
@@ -10,12 +10,12 @@
 #include <Firebase_ESP_Client.h>
 #include <addons/TokenHelper.h>
 
-//Pin Configurations
+// Pin Configurations
 #define ONE_WIRE_BUS 4
 #define BACKUP_FLAME_DIGITAL 5
 #define MAIN_FLAME 14
-#define SIREN_2 18
-#define SIREN_1 19
+#define SIREN_2 25
+#define SIREN_1 26
 #define I2C_SDA 21
 #define I2C_SCL 22
 #define UPS_BATT_INDICATOR 32
@@ -57,7 +57,7 @@ float currentTempC = 0.0;
 int currentGasValue = 0;
 int currentMainFlameValue = 0;
 int currentBackupFlameValue = 0;
-bool isOnline = true;
+bool esp32Online = true;
 unsigned long lastEnvReadTime = 0; 
 
 void setup() {
@@ -103,7 +103,7 @@ void setup() {
   wm.resetSettings();
   
   Serial.println("Connecting to WiFi...");
-  bool res = wm.autoConnect("CrowdSense_Parking", "12345678");
+  bool res = wm.autoConnect("CrowdSense_Main_Ext", "12345678");
   
   if (!res) {
     Serial.println("Failed to establish WiFi connection.");

@@ -1,3 +1,4 @@
+// Libraries
 #include <Wire.h>
 #include <vl53l8cx.h>
 #include <OneWire.h>
@@ -7,70 +8,56 @@
 #include <NTPClient.h>
 #include <WiFiUdp.h>
 #include <Firebase_ESP_Client.h>
-
-// Provide the token generation process info
 #include <addons/TokenHelper.h>
 
-// ============ CONFIGURATION ============
-#define I2C_SDA 21
-#define I2C_SCL 22
-
+// Pin Configurations
 #define ONE_WIRE_BUS 4
 #define BACKUP_FLAME_DIGITAL 5
 #define MAIN_FLAME 14
-#define SIREN_1 19
-#define SIREN_2 18
-#define BACKUP_FLAME_ANALOG 34
+#define SIREN_2 25
+#define SIREN_1 26
+#define I2C_SDA 21 //switch SDA and SCL pin on final assembly
+#define I2C_SCL 22
+#define UPS_BATT_INDICATOR 32
 #define GAS_DIGITAL 33
+#define BACKUP_FLAME_ANALOG 34
 #define GAS 35
-
-// Firebase Configuration
 #define FIREBASE_HOST "https://crowdsense-db-default-rtdb.asia-southeast1.firebasedatabase.app/"
 #define FIREBASE_LEGACY_TOKEN "5mGeiwSA9PLndbFmJZtC8x7a9U78VaM0H21nh1nd"
 
-// Data send interval (milliseconds)
-const unsigned long FIREBASE_SEND_INTERVAL = 900000; // Send data every 2 seconds
-unsigned long lastFirebaseSendTime = 0;
-
-// --- Object Initialization ---
+// Initializations
 VL53L8CX sensor(&Wire, -1);
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig config;
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org");
 
-// --- Global Variables ---
+//Database Variables
+const unsigned long FIREBASE_SEND_INTERVAL = 2000; // Interval for sending data in the database
+unsigned long lastFirebaseSendTime = 0;
+bool firebaseConnected = false;
+const String deviceMAC = "D4:E9:F4:FA:DF:5C";
+// ToF Variables
 bool tofSuccess = false;
-String deviceMAC = "D4:E9:F4:FA:DF:5C";
-
-// People Counting Variables
 const int PERSON_THRESHOLD_MM = 1500;
 int totalInside = 0;
 int totalEntries = 0;
 int totalExits = 0;
-
-// MULTI-LANE TRACKING
+//ToF Variable: MULTI-LANE TRACKING
 int laneState[4] = {0, 0, 0, 0};
-
-// Cooldown timers
+//ToF Variables: Cooldown timers
 unsigned long lastEntryTime = 0;
 unsigned long lastExitTime = 0;
 const int EVENT_COOLDOWN_MS = 800;
-
 // Environmental Variables
 float currentTempC = 0.0;
 int currentGasValue = 0;
 int currentBackupFlameValue = 0;
 int currentMainFlameValue = 0;
 unsigned long lastEnvReadTime = 0;
-
-// Firebase connection status
-bool firebaseConnected = false;
-
-// Define NTP Client to get time
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org");
 
 void setup() {
   Serial.begin(115200);
@@ -95,7 +82,6 @@ void setup() {
   sensor.begin();
   sensor.off();
   sensor.on();
-  Serial.println("ToF ON");
   
   if (sensor.init() != 0) {
     Serial.println("CRITICAL: VL53L8CX sensor not found!");
