@@ -1,54 +1,63 @@
-#include <vl53l7cx_class.h>
+//Libraries
 #include <Wire.h>
-#include <Adafruit_SSD1306.h>
-#include <Adafruit_GFX.h>
+#include <vl53l7cx_class.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <WiFiManager.h>
 #include <WiFi.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+#include <Firebase_ESP_Client.h>
+#include <addons/TokenHelper.h>
 
-// ============ CONFIGURATION ============
+//Pin Configurations
+#define ONE_WIRE_BUS 4
+#define BACKUP_FLAME_DIGITAL 5
+#define MAIN_FLAME 14
+#define SIREN_2 18
+#define SIREN_1 19
 #define I2C_SDA 21
 #define I2C_SCL 22
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
-#define OLED_RESET -1
-
-#define ONE_WIRE_BUS 4
-#define FLAME_DIGITAL 5
-#define SIREN_1 19
-#define SIREN_2 18
-#define FLAME_ANALOG 34
+#define UPS_BATT_INDICATOR 32
 #define GAS_DIGITAL 33
-#define GAS_ANALOG 35
+#define BACKUP_FLAME_ANALOG 34
+#define GAS 35
+#define FIREBASE_HOST "https://crowdsense-db-default-rtdb.asia-southeast1.firebasedatabase.app/"
+#define FIREBASE_LEGACY_TOKEN "5mGeiwSA9PLndbFmJZtC8x7a9U78VaM0H21nh1nd"
 
-// --- Object Initialization ---
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-// The library expects (Wire, LPN_PIN, RST_PIN). Using -1 for unused reset pins.
-VL53L7CX sensor(&Wire, -1, -1); 
+//Initializations
+VL53L7CX sensor(&Wire, -1, -1); // The library expects (Wire, LPN_PIN, RST_PIN). Using -1 for unused reset pins.
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
+FirebaseData fbdo;
+FirebaseAuth auth;
+FirebaseConfig config;
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org");
 
-// --- Global Variables ---
+//Database Variables
+const unsigned long FIREBASE_SEND_INTERVAL = 10000; // Interval for sending data in the database
+unsigned long lastFirebaseSendTime = 0;
+bool firebaseConnected = false;
+const String deviceMAC = "40:22:D8:5A:FA:24";
+//ToF Variables
 bool tofSuccess = false;
-
-// People Counting Variables
-const int PERSON_THRESHOLD_MM = 1500; 
+const int PERSON_THRESHOLD_MM = 500; 
 int totalInside = 0;
 int totalEntries = 0;
 int totalExits = 0;
-
-// MULTI-LANE TRACKING: 4 separate state machines for columns 0, 1, 2, and 3
+// ToF Variable: MULTI-LANE TRACKING: 4 separate state machines for columns 0, 1, 2, and 3
 int laneState[4] = {0, 0, 0, 0}; 
-
-// Cooldown timers to prevent a single person triggering multiple lanes at once
+// ToF Variables: Cooldown timers to prevent a single person triggering multiple lanes at once
 unsigned long lastEntryTime = 0;
 unsigned long lastExitTime = 0;
 const int EVENT_COOLDOWN_MS = 800; 
-
-// Environmental Variables
+// Environment Variables
 float currentTempC = 0.0;
 int currentGasValue = 0;
-int currentFlameValue = 0;
+int currentMainFlameValue = 0;
+int currentBackupFlameValue = 0;
+bool isOnline = true;
 unsigned long lastEnvReadTime = 0; 
 
 void setup() {
@@ -56,25 +65,20 @@ void setup() {
   delay(1000); 
   Serial.println("\n--- System Booting ---");
 
-  // 1. Initialize I2C for ESP32
+  // Initialize I2C for ESP32
   Wire.begin(I2C_SDA, I2C_SCL);
   Wire.setClock(400000); 
 
-  // 2. Initialize OLED
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("OLED Failed!");
-  } else {
-    display.clearDisplay();
-    display.setTextColor(WHITE);
-    display.setCursor(0,0);
-    display.println("Booting System...");
-    display.display();
-  }
+  // Configure Digital Pins
+  pinMode(BACKUP_FLAME_DIGITAL, INPUT);
+  pinMode(MAIN_FLAME, INPUT_PULLUP);
+  pinMode(GAS_DIGITAL, INPUT);
+  pinMode(SIREN_1, OUTPUT);
+  pinMode(SIREN_2, OUTPUT);
+  digitalWrite(SIREN_1, LOW);
+  digitalWrite(SIREN_2, LOW);
 
-  // 3. Initialize VL53L7CX 
-  display.println("Starting ToF...");
-  display.display();
-  
+  // Initialize VL53L7CX 
   sensor.begin(); // Setup I2C interface
   
   if (sensor.init_sensor() != 0) {
@@ -89,22 +93,56 @@ void setup() {
     Serial.println("VL53L7CX Initialized.");
   }
 
-  // 4. Initialize DS18B20
+  // Initialize DS18B20
   sensors.begin();
   Serial.println("DS18B20 Initialized.");
 
-  // 5. Configure Digital Pins
-  pinMode(FLAME_DIGITAL, INPUT);
-  pinMode(GAS_DIGITAL, INPUT);
-  pinMode(SIREN_1, OUTPUT);
-  pinMode(SIREN_2, OUTPUT);
-  digitalWrite(SIREN_1, LOW);
-  digitalWrite(SIREN_2, LOW);
-
-  // 6. Setup WiFi Access Point
-  WiFi.softAP("ESP32_CrowdSense", "12345678");
-  Serial.println("WiFi AP Ready.");
+  // WiFi and Firebase Setup
+  WiFi.mode(WIFI_STA);
+  WiFiManager wm;
+  wm.resetSettings();
   
+  Serial.println("Connecting to WiFi...");
+  bool res = wm.autoConnect("CrowdSense_Parking", "12345678");
+  
+  if (!res) {
+    Serial.println("Failed to establish WiFi connection.");
+    firebaseConnected = false;
+  } else {
+    Serial.println("WiFi connected successfully.");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+    
+    // Configure Firebase
+    config.database_url = FIREBASE_HOST;
+    config.signer.tokens.legacy_token = FIREBASE_LEGACY_TOKEN;
+    
+    // Assign the callback function for token generation
+    config.token_status_callback = tokenStatusCallback;
+    
+    Firebase.begin(&config, &auth);
+    Firebase.reconnectWiFi(true);
+    
+    // Test Firebase connection
+    Serial.println("Testing Firebase connection...");
+    if (Firebase.ready()) {
+      firebaseConnected = true;
+      Serial.println("Firebase connected successfully!");
+      
+      // Send initial device status
+      String deviceStatusPath = "/sensor_data/" + deviceMAC + "/status";
+      Firebase.RTDB.setString(&fbdo, deviceStatusPath.c_str(), "online");
+      Firebase.RTDB.setInt(&fbdo, "/sensor_data/" + deviceMAC + "/timestamp", millis());
+      timeClient.begin();
+      // Set offset time in seconds to adjust for your timezone 
+      // GMT+8 (Philippines) = 8 * 60 * 60 = 28800
+      timeClient.setTimeOffset(28800);
+    } else {
+      Serial.println("Firebase connection failed!");
+      firebaseConnected = false;
+    }
+  }
+
   Serial.println("--- Setup Complete ---");
 }
 
@@ -115,20 +153,22 @@ void loop() {
   if (millis() - lastEnvReadTime >= 1000) {
     lastEnvReadTime = millis();
     
-    currentFlameValue = analogRead(FLAME_ANALOG);
-    currentGasValue = analogRead(GAS_ANALOG);
+    currentBackupFlameValue = analogRead(BACKUP_FLAME_ANALOG);
+    currentGasValue = analogRead(GAS);
     
     sensors.requestTemperatures();
     currentTempC = sensors.getTempCByIndex(0);
 
     Serial.print("Temp: "); Serial.print(currentTempC); Serial.print("C | ");
     Serial.print("Gas: "); Serial.print(currentGasValue); Serial.print(" | ");
-    Serial.print("Flame: "); Serial.print(currentFlameValue); Serial.print(" | ");
+    Serial.print("Flame: "); Serial.print(currentBackupFlameValue); Serial.print(" | ");
     Serial.print("People Inside: "); Serial.println(totalInside);
   }
 
-  if (currentFlameValue <= 1000 && currentGasValue >= 500) {
-    digitalWrite(SIREN_2, HIGH);
+  if (currentMainFlameValue <= 1000 || currentBackupFlameValue <= 1000) {
+    if (currentGasValue >= 500){
+      digitalWrite(SIREN_2, HIGH);
+    }
   } else {
     digitalWrite(SIREN_2, LOW);
   }
@@ -231,29 +271,97 @@ void loop() {
       }
 
       if (totalInside < 0) totalInside = 0;
-
-      // =========================================================
-      // TASK 3: UPDATE OLED UI 
-      // =========================================================
-      display.clearDisplay();
-      display.setTextSize(1);
-      display.setCursor(0, 0);
-      display.print("CrowdSense AP Active");
-      display.fillRect(105, 0, 8, 8, globalA ? SSD1306_WHITE : SSD1306_BLACK);
-      display.fillRect(115, 0, 8, 8, globalB ? SSD1306_WHITE : SSD1306_BLACK);
-      display.setTextSize(2);
-      display.setCursor(0, 15);
-      display.print("IN: ");
-      display.print(totalInside);
-      display.setTextSize(1);
-      display.setCursor(0, 35);
-      display.print("T:"); display.print(currentTempC, 1); display.print("C ");
-      display.print("G:"); display.print(currentGasValue); display.print(" ");
-      display.print("F:"); display.print(currentFlameValue);
-      display.setCursor(0, 50);
-      display.print("Tot In:"); display.print(totalEntries);
-      display.print(" Out:"); display.print(totalExits);
-      display.display();
+    }
+  }
+  // =========================================================
+  // TASK 3: SEND DATA TO FIREBASE
+  // =========================================================
+  if (firebaseConnected && (millis() - lastFirebaseSendTime >= FIREBASE_SEND_INTERVAL)) {
+    lastFirebaseSendTime = millis();
+    
+    // Check if Firebase is ready
+    if (Firebase.ready()) {
+      String basePath = "/sensor_data/" + deviceMAC + "/";
+      
+      // Send Temperature
+      String tempPath = basePath + "temperature";
+      if (Firebase.RTDB.setFloat(&fbdo, tempPath.c_str(), currentTempC)) {
+        Serial.print("✓ Temperature sent: ");
+        Serial.println(currentTempC);
+      } else {
+        Serial.print("✗ Temperature send failed: ");
+        Serial.println(fbdo.errorReason());
+      }
+      
+      // Send Gas value (analog and percentage)
+      String gasPath = basePath + "gas";
+      if (Firebase.RTDB.setInt(&fbdo, gasPath.c_str(), currentGasValue)) {
+        Serial.print("✓ Gas analog sent: ");
+        Serial.println(currentGasValue);
+      } else {
+        Serial.print("✗ Gas analog send failed: ");
+        Serial.println(fbdo.errorReason());
+      }
+      
+      // Send Gas percentage
+      String gasPercentPath = basePath + "gas_percentage";
+      int gasPercentage = map(currentGasValue, 0, 4095, 0, 100);
+      Firebase.RTDB.setInt(&fbdo, gasPercentPath.c_str(), gasPercentage);
+      
+      // Send Flame value
+      String flamePath = basePath + "flame";
+      if (Firebase.RTDB.setInt(&fbdo, flamePath.c_str(), currentBackupFlameValue)) {
+        Serial.print("✓ Flame analog sent: ");
+        Serial.println(currentBackupFlameValue);
+      } else {
+        Serial.print("✗ Flame analog send failed: ");
+        Serial.println(fbdo.errorReason());
+      }
+      
+      // Send People count data
+      String peopleInsidePath = basePath + "people_inside";
+      if (Firebase.RTDB.setInt(&fbdo, peopleInsidePath.c_str(), totalInside)) {
+        Serial.print("✓ People inside sent: ");
+        Serial.println(totalInside);
+      }
+      
+      String entriesPath = basePath + "total_entries";
+      Firebase.RTDB.setInt(&fbdo, entriesPath.c_str(), totalEntries);
+      
+      String exitsPath = basePath + "total_exits";
+      Firebase.RTDB.setInt(&fbdo, exitsPath.c_str(), totalExits);
+      
+      // Send timestamp
+      unsigned long epochTime = timeClient.getEpochTime();
+  
+      // To get currentEpochMillis (Milliseconds)
+      // Note: Most NTP libraries return seconds. We multiply by 1000 
+      // and add the internal millis() remainder for precision.
+      long long currentEpochMillis = ((long long)epochTime * 1000) + (millis() % 1000);
+      String timestampPath = basePath + "last_updated";
+      Firebase.RTDB.setInt(&fbdo, timestampPath.c_str(), currentEpochMillis);
+      
+      // Send flame and gas digital status (for alarms)
+      String flameDigitalPath = basePath + "flame_detected";
+      bool flameDetected = (currentBackupFlameValue <= 1000);
+      Firebase.RTDB.setBool(&fbdo, flameDigitalPath.c_str(), flameDetected);
+      
+      String gasDigitalPath = basePath + "gas_detected";
+      bool gasDetected = (currentGasValue >= 500);
+      Firebase.RTDB.setBool(&fbdo, gasDigitalPath.c_str(), gasDetected);
+      
+      // Send siren status
+      String sirenPath = basePath + "siren_active";
+      bool sirenActive = (currentBackupFlameValue <= 1000 && currentGasValue >= 500);
+      Firebase.RTDB.setBool(&fbdo, sirenPath.c_str(), sirenActive);
+      
+      Serial.println("--- Firebase data update complete ---");
+      
+    } else {
+      Serial.println("Firebase not ready. Reconnecting...");
+      // Attempt to reconnect
+      Firebase.begin(&config, &auth);
+      delay(100);
     }
   }
 }
