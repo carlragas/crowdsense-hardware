@@ -178,6 +178,7 @@ void setup() {
   pinMode(BACKUP_FLAME_DIGITAL, INPUT);
   pinMode(MAIN_FLAME, INPUT_PULLUP);
   pinMode(GAS_DIGITAL, INPUT);
+  pinMode(UPS_POWER_INDICATOR, INPUT);
   pinMode(SIREN_1, OUTPUT);
   pinMode(SIREN_2, OUTPUT);
   digitalWrite(SIREN_1, LOW);
