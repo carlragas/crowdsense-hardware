@@ -56,8 +56,89 @@ const int EVENT_COOLDOWN_MS = 800;
 float currentTempC = 0.0;
 int currentGasValue = 0;
 int currentBackupFlameValue = 0;
-int currentMainFlameValue = 0;
+bool currentMainFlameValue = true;
 unsigned long lastEnvReadTime = 0;
+// Siren Variables
+bool sirenAlertActive = false;
+bool sirenClearActive = false;
+unsigned long sirenAlertTimer = 0;
+unsigned long sirenClearTimer = 0;
+const unsigned long sirenAlertDuration = 5000; 
+const unsigned long sirenClearDuration = 60000; 
+
+void connectNetwork(){
+    // WiFi and Firebase Setup
+  WiFi.mode(WIFI_STA);
+  WiFiManager wm;
+  wm.resetSettings();
+  Serial.println("Connecting to WiFi...");
+  bool res = wm.autoConnect("CrowdSense_Parking", "12345678");
+  if (!res) {
+    Serial.println("Failed to establish WiFi connection.");
+    firebaseConnected = false;
+  } else {
+    Serial.println("WiFi connected successfully.");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+    connectDB();
+  }
+}
+
+void connectDB(){
+  // Configure Firebase
+  config.database_url = FIREBASE_HOST;
+  config.signer.tokens.legacy_token = FIREBASE_LEGACY_TOKEN;
+  // Assign the callback function for token generation
+  config.token_status_callback = tokenStatusCallback;
+  Firebase.begin(&config, &auth);
+  Firebase.reconnectWiFi(true);
+  // Test Firebase connection
+  Serial.println("Testing Firebase connection...");
+  if (Firebase.ready()) {
+    firebaseConnected = true;
+    Serial.println("Firebase connected successfully!");
+    // Send initial device status
+    String deviceStatusPath = "/sensor_data/" + deviceMAC + "/status";
+    Firebase.RTDB.setString(&fbdo, deviceStatusPath.c_str(), esp32Online);
+    Firebase.RTDB.setInt(&fbdo, "/sensor_data/" + deviceMAC + "/timestamp", millis());
+    timeClient.begin();
+    // Set offset time in seconds to adjust for your timezone 
+    // GMT+8 (Philippines) = 8 * 60 * 60 = 28800
+    timeClient.setTimeOffset(28800);
+    } else {
+      Serial.println("Firebase connection failed!");
+      firebaseConnected = false;
+    }
+}
+
+void triggerAlertSiren(){
+  bool alertStatus = (!currentMainFlameValue || currentBackupFlameValue <= 1000) && (currentGasValue >= 600);
+  if (alertStatus && !sirenClearActive) {
+    if  (!sirenAlertActive){
+      sirenAlertActive =  true;
+      digitalWrite(SIREN_2,HIGH);
+    }
+    sirenAlertTimer = millis() + sirenAlertDuration;
+    Serial.println("ALERT ON: Emergency Fire Siren Activated.");
+  }
+
+  if (sirenAlertActive && millis() >= sirenAlertTimer){
+    sirenAlertActive = false;
+    digitalWrite(SIREN_2, LOW);
+    Serial.println("ALERT OFF: Emergency Fire Siren Deactivated.");
+  }
+}
+
+void triggerClearSiren(){
+  bool clearStatus = sirenAlertActive && totalInside == 0;
+  if (clearStatus){
+    if (!sirenClearActive){
+      sirenClearActive = true;
+      digitalWrite(SIREN_1, HIGH);
+      sirenClearTimer = millis() + sirenClearDuration;
+    }
+    Serial.println("AREA CLEAR: All personnel have evacuated the premises.");
+  }
 
 void setup() {
   Serial.begin(115200);
@@ -93,58 +174,10 @@ void setup() {
     tofSuccess = true;
     Serial.println("VL53L8CX Initialized.");
   }
-
   // Initialize DS18B20
   sensors.begin();
   Serial.println("DS18B20 Initialized.");
-
-  // WiFi and Firebase Setup
-  WiFi.mode(WIFI_STA);
-  WiFiManager wm;
-  wm.resetSettings();
-  
-  Serial.println("Connecting to WiFi...");
-  bool res = wm.autoConnect("CrowdSense_Parking", "12345678");
-  
-  if (!res) {
-    Serial.println("Failed to establish WiFi connection.");
-    firebaseConnected = false;
-  } else {
-    Serial.println("WiFi connected successfully.");
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
-    
-    // Configure Firebase
-    config.database_url = FIREBASE_HOST;
-    config.signer.tokens.legacy_token = FIREBASE_LEGACY_TOKEN;
-    
-    // Assign the callback function for token generation
-    config.token_status_callback = tokenStatusCallback;
-    
-    Firebase.begin(&config, &auth);
-    Firebase.reconnectWiFi(true);
-    
-    // Test Firebase connection
-    Serial.println("Testing Firebase connection...");
-    if (Firebase.ready()) {
-      firebaseConnected = true;
-      Serial.println("Firebase connected successfully!");
-      
-      // Send initial device status
-      String deviceStatusPath = "/sensor_data/" + deviceMAC + "/status";
-      Firebase.RTDB.setString(&fbdo, deviceStatusPath.c_str(), "online");
-      Firebase.RTDB.setInt(&fbdo, "/sensor_data/" + deviceMAC + "/timestamp", millis());
-      timeClient.begin();
-      // Set offset time in seconds to adjust for your timezone 
-      // GMT+8 (Philippines) = 8 * 60 * 60 = 28800
-      timeClient.setTimeOffset(28800);
-    } else {
-      Serial.println("Firebase connection failed!");
-      firebaseConnected = false;
-    }
-  }
-  
-  
+  connectNetwork();
   Serial.println("--- Setup Complete ---");
 }
 
@@ -310,12 +343,22 @@ void loop() {
       Firebase.RTDB.setInt(&fbdo, gasPercentPath.c_str(), gasPercentage);
       
       // Send Flame value
-      String flamePath = basePath + "flame";
-      if (Firebase.RTDB.setInt(&fbdo, flamePath.c_str(), currentBackupFlameValue)) {
-        Serial.print("✓ Flame analog sent: ");
+      String backupflamePath = basePath + "backup_flame";
+      if (Firebase.RTDB.setInt(&fbdo, backupflamePath.c_str(), currentBackupFlameValue)) {
+        Serial.print("✓ Backup Flame analog sent: ");
         Serial.println(currentBackupFlameValue);
       } else {
-        Serial.print("✗ Flame analog send failed: ");
+        Serial.print("✗ Backup Flame analog send failed: ");
+        Serial.println(fbdo.errorReason());
+      }
+
+      // Send Flame value
+      String mainflamePath = basePath + "main_flame";
+      if (Firebase.RTDB.setInt(&fbdo, mainflamePath.c_str(), currentMainFlameValue)) {
+        Serial.print("✓ Backup Flame analog sent: ");
+        Serial.println(currentMainFlameValue);
+      } else {
+        Serial.print("✗ Backup Flame analog send failed: ");
         Serial.println(fbdo.errorReason());
       }
       
@@ -344,7 +387,7 @@ void loop() {
       
       // Send flame and gas digital status (for alarms)
       String flameDigitalPath = basePath + "flame_detected";
-      bool flameDetected = (currentBackupFlameValue <= 1000);
+      bool flameDetected = (currentBackupFlameValue <= 1000 || !cureentMainFlameValue);
       Firebase.RTDB.setBool(&fbdo, flameDigitalPath.c_str(), flameDetected);
       
       String gasDigitalPath = basePath + "gas_detected";
@@ -352,9 +395,10 @@ void loop() {
       Firebase.RTDB.setBool(&fbdo, gasDigitalPath.c_str(), gasDetected);
       
       // Send siren status
-      String sirenPath = basePath + "siren_active";
-      bool sirenActive = (currentBackupFlameValue <= 1000 && currentGasValue >= 500);
-      Firebase.RTDB.setBool(&fbdo, sirenPath.c_str(), sirenActive);
+      String sirenAlertPath = basePath + "siren_alert_active";
+      Firebase.RTDB.setBool(&fbdo, sirenAlertPath.c_str(), sirenAlertActive);
+      String sirenClearPath = basePath + "siren_clear_active";
+      Firebase.RTDB.setBool(&fbdo, sirenClearPath.c_str(), sirenClearActive);
       
       Serial.println("--- Firebase data update complete ---");
       
