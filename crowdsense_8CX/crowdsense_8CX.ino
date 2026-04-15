@@ -55,8 +55,9 @@ const int EVENT_COOLDOWN_MS = 800;
 // Environmental Variables
 float currentTempC = 0.0;
 int currentGasValue = 0;
-int currentBackupFlameValue = 0;
 bool currentMainFlameValue = true;
+int currentBackupFlameValue = 0;
+bool esp32Online = true;
 unsigned long lastEnvReadTime = 0;
 // Siren Variables
 bool sirenAlertActive = false;
@@ -139,6 +140,7 @@ void triggerClearSiren(){
     }
     Serial.println("AREA CLEAR: All personnel have evacuated the premises.");
   }
+}
 
 void setup() {
   Serial.begin(115200);
@@ -387,7 +389,7 @@ void loop() {
       
       // Send flame and gas digital status (for alarms)
       String flameDigitalPath = basePath + "flame_detected";
-      bool flameDetected = (currentBackupFlameValue <= 1000 || !cureentMainFlameValue);
+      bool flameDetected = (currentBackupFlameValue <= 1000 || !currentMainFlameValue);
       Firebase.RTDB.setBool(&fbdo, flameDigitalPath.c_str(), flameDetected);
       
       String gasDigitalPath = basePath + "gas_detected";
