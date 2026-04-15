@@ -18,7 +18,7 @@
 #define SIREN_1 26
 #define I2C_SDA 21 //switch SDA and SCL pin on final assembly
 #define I2C_SCL 22
-#define UPS_BATT_INDICATOR 32
+#define UPS_POWER_INDICATOR 32
 #define GAS_DIGITAL 33
 #define BACKUP_FLAME_ANALOG 34
 #define GAS 35
@@ -66,6 +66,13 @@ unsigned long sirenAlertTimer = 0;
 unsigned long sirenClearTimer = 0;
 const unsigned long sirenAlertDuration = 5000; 
 const unsigned long sirenClearDuration = 60000; 
+// Power Variables - Voltage Divider
+const float Resistor1 = 10000.0;
+const float Resistor2 = 3300.0;
+const float powerRatio = (Resistor1 + Resistor2)/Resistor2;
+const float upperPowerThreshold = 11.5;
+const float lowerPowerThreshold = 10.8;
+String powerStatus;
 
 void connectNetwork(){
     // WiFi and Firebase Setup
@@ -110,6 +117,22 @@ void connectDB(){
       Serial.println("Firebase connection failed!");
       firebaseConnected = false;
     }
+}
+
+void checkPowerStatus(){
+  int rawPinReading = analogRead(UPS_POWER_INDICATOR);
+  float pinVoltage = (rawPinReading / 4095.0)*3.3;
+  float upsVoltage = pinVoltage * powerRatio;
+
+  if (upsVoltage >= upperPowerThreshold) {
+    powerStatus = "High";
+  } else if (upsVoltage < upperPowerThreshold && upsVoltage >= lowerPowerThreshold){
+    powerStatus = "Adequate";
+  } else{
+    powerStatus = "Low";
+  }
+  Serial.print("Power Status: ");
+  Serial.print(powerStatus);
 }
 
 void triggerAlertSiren(){
@@ -179,6 +202,7 @@ void setup() {
   // Initialize DS18B20
   sensors.begin();
   Serial.println("DS18B20 Initialized.");
+  checkPowerStatus();
   connectNetwork();
   Serial.println("--- Setup Complete ---");
 }
@@ -205,13 +229,8 @@ void loop() {
     Serial.print("Flame: "); Serial.print(currentBackupFlameValue); Serial.print(" ("); Serial.print(flamePercentage); Serial.print("%) | ");
     Serial.print("People Inside: "); Serial.println(totalInside);
   }
-  
-  // Siren control logic
-  if (currentBackupFlameValue <= 1000 && currentGasValue >= 500) {
-    digitalWrite(SIREN_2, HIGH);
-  } else {
-    digitalWrite(SIREN_2, LOW);
-  }
+
+  checkPowerStatus();
   
   // =========================================================
   // TASK 2: PROCESS MULTI-LANE ToF DATA (CONTINUOUSLY)
@@ -401,6 +420,10 @@ void loop() {
       Firebase.RTDB.setBool(&fbdo, sirenAlertPath.c_str(), sirenAlertActive);
       String sirenClearPath = basePath + "siren_clear_active";
       Firebase.RTDB.setBool(&fbdo, sirenClearPath.c_str(), sirenClearActive);
+
+      // Send Power Status
+      String powerStatusPath = basePath + "power_status";
+      Firebase.RTDB.setBool(&fbdo, powerStatusPath.c_str(), powerStatus);
       
       Serial.println("--- Firebase data update complete ---");
       
