@@ -55,7 +55,7 @@ const int EVENT_COOLDOWN_MS = 800;
 // Environment Variables
 float currentTempC = 0.0;
 int currentGasValue = 0;
-bool currentMainFlameValue = 0;
+bool currentMainFlameValue = true;
 int currentBackupFlameValue = 0;
 bool esp32Online = true;
 unsigned long lastEnvReadTime = 0; 
@@ -100,7 +100,7 @@ void connectDB(){
     Serial.println("Firebase connected successfully!");
     // Send initial device status
     String deviceStatusPath = "/sensor_data/" + deviceMAC + "/status";
-    Firebase.RTDB.setString(&fbdo, deviceStatusPath.c_str(), "online");
+    Firebase.RTDB.setString(&fbdo, deviceStatusPath.c_str(), esp32Online);
     Firebase.RTDB.setInt(&fbdo, "/sensor_data/" + deviceMAC + "/timestamp", millis());
     timeClient.begin();
     // Set offset time in seconds to adjust for your timezone 
@@ -113,7 +113,7 @@ void connectDB(){
 }
 
 void triggerAlertSiren(){
-  bool alertStatus = (currentMainFlameValue <= 1000 || currentBackupFlameValue <= 1000) && (currentGasValue >= 600);
+  bool alertStatus = (!currentMainFlameValue || currentBackupFlameValue <= 1000) && (currentGasValue >= 600);
   if (alertStatus && !sirenClearActive) {
     if  (!sirenAlertActive){
       sirenAlertActive =  true;
@@ -190,7 +190,7 @@ void loop() {
     lastEnvReadTime = millis();
     
     currentBackupFlameValue = analogRead(BACKUP_FLAME_ANALOG);
-    currentMainFlameValue = 
+    currentMainFlameValue = digitalRead(MAIN_FLAME);
     currentGasValue = analogRead(GAS);
     
     sensors.requestTemperatures();
@@ -375,7 +375,7 @@ void loop() {
       
       // Send flame and gas digital status (for alarms)
       String flameDigitalPath = basePath + "flame_detected";
-      bool flameDetected = (currentBackupFlameValue <= 1000);
+      bool flameDetected = (currentBackupFlameValue <= 1000 || !currentMainFlameValue);
       Firebase.RTDB.setBool(&fbdo, flameDigitalPath.c_str(), flameDetected);
       
       String gasDigitalPath = basePath + "gas_detected";
