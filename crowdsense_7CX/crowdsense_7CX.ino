@@ -36,7 +36,7 @@ WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org");
 
 //Database Variables
-const unsigned long FIREBASE_SEND_INTERVAL = 10000; // Interval for sending data in the database
+const unsigned long FIREBASE_SEND_INTERVAL = 7000; // Interval for sending data in the database
 unsigned long lastFirebaseSendTime = 0;
 bool firebaseConnected = false;
 const String deviceMAC = "40:22:D8:5A:FA:24";
@@ -67,6 +67,8 @@ unsigned long sirenClearTimer = 0;
 const unsigned long sirenAlertDuration = 5000; 
 const unsigned long sirenClearDuration = 60000; 
 // Power Variables - Voltage Divider
+const unsigned long checkPowerInterval = 5000;
+unsigned long lastPowerCheckedTime = 0;
 const float Resistor1 = 10000.0;
 const float Resistor2 = 3300.0;
 const float powerRatio = (Resistor1 + Resistor2)/Resistor2;
@@ -120,118 +122,41 @@ void connectDB(){
 }
 
 void checkPowerStatus(){
-  int rawPinReading = analogRead(UPS_POWER_INDICATOR);
-  float pinVoltage = (rawPinReading / 4095.0)*3.3;
-  float upsVoltage = pinVoltage * powerRatio;
-
-  if (upsVoltage >= upperPowerThreshold) {
-    powerStatus = "High";
-  } else if (upsVoltage < upperPowerThreshold && upsVoltage >= lowerPowerThreshold){
-    powerStatus = "Adequate";
-  } else{
-    powerStatus = "Low";
+  if (firebaseConnected && (millis() - lastPowerCheckedTime >= checkPowerInterval)){
+    lastPowerCheckedTime = millis();
+    int rawPinReading = analogRead(UPS_POWER_INDICATOR);
+    float pinVoltage = (rawPinReading / 4095.0)*3.3;
+    float upsVoltage = pinVoltage * powerRatio;
+    if (upsVoltage >= upperPowerThreshold) {
+      powerStatus = "High";
+    } 
+    else if (upsVoltage < upperPowerThreshold && upsVoltage >= lowerPowerThreshold){
+      powerStatus = "Adequate";
+    } 
+    else{
+      powerStatus = "Low";
   }
-  Serial.print("Power Status: ");
-  Serial.print(powerStatus);
-}
-
-void triggerAlertSiren(){
-  bool alertStatus = (!currentMainFlameValue || currentBackupFlameValue <= 1000) && (currentGasValue >= 600);
-  if (alertStatus && !sirenClearActive) {
-    if  (!sirenAlertActive){
-      sirenAlertActive =  true;
-      digitalWrite(SIREN_2,HIGH);
-    }
-    sirenAlertTimer = millis() + sirenAlertDuration;
-    Serial.println("ALERT ON: Emergency Fire Siren Activated.");
-  }
-
-  if (sirenAlertActive && millis() >= sirenAlertTimer){
-    sirenAlertActive = false;
-    digitalWrite(SIREN_2, LOW);
-    Serial.println("ALERT OFF: Emergency Fire Siren Deactivated.");
+  Serial.println("Power Status: " + powerStatus);
   }
 }
 
-void triggerClearSiren(){
-  bool clearStatus = sirenAlertActive && totalInside == 0;
-  if (clearStatus){
-    if (!sirenClearActive){
-      sirenClearActive = true;
-      digitalWrite(SIREN_1, HIGH);
-      sirenClearTimer = millis() + sirenClearDuration;
-    }
-    Serial.println("AREA CLEAR: All personnel have evacuated the premises.");
-  }
-
-  if (sirenClearActive && millis() >= sirenClearTimer) {
-    sirenClearActive = false;
-    digitalWrite(SIREN_1, LOW);
-  }
-}
-
-void setup() {
-  Serial.begin(115200);
-  delay(1000); 
-  Serial.println("\n--- System Booting ---");
-  // Initialize I2C for ESP32
-  Wire.begin(I2C_SDA, I2C_SCL);
-  Wire.setClock(400000); 
-  // Configure Digital Pins
-  pinMode(BACKUP_FLAME_DIGITAL, INPUT);
-  pinMode(MAIN_FLAME, INPUT_PULLUP);
-  pinMode(GAS_DIGITAL, INPUT);
-  pinMode(UPS_POWER_INDICATOR, INPUT);
-  pinMode(SIREN_1, OUTPUT);
-  pinMode(SIREN_2, OUTPUT);
-  digitalWrite(SIREN_1, LOW);
-  digitalWrite(SIREN_2, LOW);
-  // Initialize VL53L7CX 
-  sensor.begin(); // Setup I2C interface
-  if (sensor.init_sensor() != 0) {
-    Serial.println("CRITICAL: VL53L7CX sensor not found!");
-    tofSuccess = false;
-  } else {
-    // STM32duino library specific methods
-    sensor.vl53l7cx_set_resolution(VL53L7CX_RESOLUTION_4X4);
-    sensor.vl53l7cx_set_ranging_frequency_hz(15);
-    sensor.vl53l7cx_start_ranging();
-    tofSuccess = true;
-    Serial.println("VL53L7CX Initialized.");
-  }
-  // Initialize DS18B20
-  sensors.begin();
-  Serial.println("DS18B20 Initialized.");
-  checkPowerStatus();
-  connectNetwork();
-  Serial.println("--- Setup Complete ---");
-}
-
-void loop() {
-  // =========================================================
-  // TASK 1: READ ENVIRONMENTAL SENSORS (ONCE PER SECOND)
-  // =========================================================
+void readEnvironment(){
   if (millis() - lastEnvReadTime >= 1000) {
-    lastEnvReadTime = millis();
+  lastEnvReadTime = millis();
+  currentBackupFlameValue = analogRead(BACKUP_FLAME_ANALOG);
+  currentMainFlameValue = digitalRead(MAIN_FLAME);
+  currentGasValue = analogRead(GAS);
     
-    currentBackupFlameValue = analogRead(BACKUP_FLAME_ANALOG);
-    currentMainFlameValue = digitalRead(MAIN_FLAME);
-    currentGasValue = analogRead(GAS);
-    
-    sensors.requestTemperatures();
-    currentTempC = sensors.getTempCByIndex(0);
-
+  sensors.requestTemperatures();
+  currentTempC = sensors.getTempCByIndex(0);
     Serial.print("Temp: "); Serial.print(currentTempC); Serial.print("C | ");
     Serial.print("Gas: "); Serial.print(currentGasValue); Serial.print(" | ");
     Serial.print("Flame: "); Serial.print(currentBackupFlameValue); Serial.print(" | ");
     Serial.print("People Inside: "); Serial.println(totalInside);
   }
+}
 
-  checkPowerStatus();
-
-  // =========================================================
-  // TASK 2: PROCESS MULTI-LANE ToF DATA (CONTINUOUSLY)
-  // =========================================================
+void countCrowd(){
   if (tofSuccess) {
     VL53L7CX_ResultsData results;
     uint8_t dataReady = 0;
@@ -329,25 +254,57 @@ void loop() {
       if (totalInside < 0) totalInside = 0;
     }
   }
+}
 
-  triggerAlertSiren();
-  triggerClearSiren();
-  // =========================================================
-  // TASK 3: SEND DATA TO FIREBASE
-  // =========================================================
+void triggerAlertSiren(){
+  bool alertStatus = (!currentMainFlameValue || currentBackupFlameValue <= 1000) && (currentGasValue >= 600);
+  if (alertStatus && !sirenClearActive) {
+    if  (!sirenAlertActive){
+      sirenAlertActive =  true;
+      digitalWrite(SIREN_2,HIGH);
+    }
+    sirenAlertTimer = millis() + sirenAlertDuration;
+    Serial.println("ALERT ON: Emergency Fire Siren Activated.");
+  }
+
+  if (sirenAlertActive && millis() >= sirenAlertTimer){
+    sirenAlertActive = false;
+    digitalWrite(SIREN_2, LOW);
+    Serial.println("ALERT OFF: Emergency Fire Siren Deactivated.");
+  }
+}
+
+void triggerClearSiren(){
+  bool clearStatus = sirenAlertActive && totalInside == 0;
+  if (clearStatus){
+    if (!sirenClearActive){
+      sirenClearActive = true;
+      digitalWrite(SIREN_1, HIGH);
+      sirenClearTimer = millis() + sirenClearDuration;
+    }
+    Serial.println("AREA CLEAR: All personnel have evacuated the premises.");
+    clearStatus = false;
+  }
+
+  if (sirenClearActive && millis() >= sirenClearTimer) {
+    sirenClearActive = false;
+    digitalWrite(SIREN_1, LOW);
+  }
+}
+
+void uploadData(){
   if (firebaseConnected && (millis() - lastFirebaseSendTime >= FIREBASE_SEND_INTERVAL)) {
     lastFirebaseSendTime = millis();
-    
     // Check if Firebase is ready
     if (Firebase.ready()) {
       String basePath = "/sensor_data/" + deviceMAC + "/";
-      
       // Send Temperature
       String tempPath = basePath + "temperature";
       if (Firebase.RTDB.setFloat(&fbdo, tempPath.c_str(), currentTempC)) {
         Serial.print("✓ Temperature sent: ");
         Serial.println(currentTempC);
-      } else {
+      } 
+      else {
         Serial.print("✗ Temperature send failed: ");
         Serial.println(fbdo.errorReason());
       }
@@ -361,11 +318,6 @@ void loop() {
         Serial.print("✗ Gas analog send failed: ");
         Serial.println(fbdo.errorReason());
       }
-      
-      // Send Gas percentage
-      String gasPercentPath = basePath + "gas_percentage";
-      int gasPercentage = map(currentGasValue, 0, 4095, 0, 100);
-      Firebase.RTDB.setInt(&fbdo, gasPercentPath.c_str(), gasPercentage);
       
       // Send Flame value
       String flamePath = basePath + "flame";
@@ -390,25 +342,19 @@ void loop() {
       String exitsPath = basePath + "total_exits";
       Firebase.RTDB.setInt(&fbdo, exitsPath.c_str(), totalExits);
       
+      timeClient.begin();
+      // Set offset time in seconds to adjust for your timezone 
+      // GMT+8 (Philippines) = 8 * 60 * 60 = 28800
+      timeClient.setTimeOffset(28800);
       // Send timestamp
       unsigned long epochTime = timeClient.getEpochTime();
-  
       // To get currentEpochMillis (Milliseconds)
       // Note: Most NTP libraries return seconds. We multiply by 1000 
       // and add the internal millis() remainder for precision.
       long long currentEpochMillis = ((long long)epochTime * 1000) + (millis() % 1000);
       String timestampPath = basePath + "last_updated";
       Firebase.RTDB.setInt(&fbdo, timestampPath.c_str(), currentEpochMillis);
-      
-      // Send flame and gas digital status (for alarms)
-      String flameDigitalPath = basePath + "flame_detected";
-      bool flameDetected = (currentBackupFlameValue <= 1000 || !currentMainFlameValue);
-      Firebase.RTDB.setBool(&fbdo, flameDigitalPath.c_str(), flameDetected);
-      
-      String gasDigitalPath = basePath + "gas_detected";
-      bool gasDetected = (currentGasValue >= 500);
-      Firebase.RTDB.setBool(&fbdo, gasDigitalPath.c_str(), gasDetected);
-      
+  
       // Send siren status
       String sirenAlertPath = basePath + "siren_alert_active";
       Firebase.RTDB.setBool(&fbdo, sirenAlertPath.c_str(), sirenAlertActive);
@@ -417,7 +363,7 @@ void loop() {
 
       // Send Power Status
       String powerStatusPath = basePath + "power_status";
-      Firebase.RTDB.setBool(&fbdo, powerStatusPath.c_str(), powerStatus);
+      Firebase.RTDB.setString(&fbdo, powerStatusPath.c_str(), powerStatus);
       
       Serial.println("--- Firebase data update complete ---");
       
@@ -428,4 +374,50 @@ void loop() {
       delay(100);
     }
   }
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000); 
+  Serial.println("\n--- System Booting ---");
+  // Initialize I2C for ESP32
+  Wire.begin(I2C_SDA, I2C_SCL);
+  Wire.setClock(400000); 
+  // Configure Digital Pins
+  pinMode(BACKUP_FLAME_DIGITAL, INPUT);
+  pinMode(MAIN_FLAME, INPUT_PULLUP);
+  pinMode(GAS_DIGITAL, INPUT);
+  pinMode(UPS_POWER_INDICATOR, INPUT);
+  pinMode(SIREN_1, OUTPUT);
+  pinMode(SIREN_2, OUTPUT);
+  digitalWrite(SIREN_1, LOW);
+  digitalWrite(SIREN_2, LOW);
+  // Initialize VL53L7CX 
+  sensor.begin(); // Setup I2C interface
+  if (sensor.init_sensor() != 0) {
+    Serial.println("CRITICAL: VL53L7CX sensor not found!");
+    tofSuccess = false;
+  } else {
+    // STM32duino library specific methods
+    sensor.vl53l7cx_set_resolution(VL53L7CX_RESOLUTION_4X4);
+    sensor.vl53l7cx_set_ranging_frequency_hz(15);
+    sensor.vl53l7cx_start_ranging();
+    tofSuccess = true;
+    Serial.println("VL53L7CX Initialized.");
+  }
+  // Initialize DS18B20
+  sensors.begin();
+  Serial.println("DS18B20 Initialized.");
+  checkPowerStatus();
+  connectNetwork();
+  Serial.println("--- Setup Complete ---");
+}
+
+void loop() {
+  checkPowerStatus();
+  readEnvironment();
+  countCrowd();
+  triggerAlertSiren();
+  triggerClearSiren();
+  uploadData();
 }
