@@ -60,12 +60,9 @@ int currentBackupFlameValue = 0;
 bool esp32Online = true;
 unsigned long lastEnvReadTime = 0; 
 // Siren Variables
+bool emergencyMode = false;
 bool sirenAlertActive = false;
 bool sirenClearActive = false;
-unsigned long sirenAlertTimer = 0;
-unsigned long sirenClearTimer = 0;
-const unsigned long sirenAlertDuration = 5000; 
-const unsigned long sirenClearDuration = 60000; 
 // Power Variables - Voltage Divider
 const unsigned long checkPowerInterval = 5000;
 unsigned long lastPowerCheckedTime = 0;
@@ -268,36 +265,82 @@ void countCrowd(){
 }
 
 void triggerAlertSiren(){
-  bool alertStatus = (!currentMainFlameValue || currentBackupFlameValue <= 1000) && (currentGasValue >= 600);
-  if (alertStatus && !sirenClearActive) {
-    if  (!sirenAlertActive){
-      sirenAlertActive =  true;
-      digitalWrite(SIREN_2,HIGH);
+  bool isFireDetected = (!currentMainFlameValue || currentBackupFlameValue <= 1000) && (currentGasValue >= 600);
+  unsigned long sirenAlertDuration = 0;
+  if (Firebase.ready()){
+    String manualAlertOnPath = "/sensor_data" + deviceMAC + "/manual_alert_on";
+    if (Firebase.RTDB.getBool(&fbdo, manualAlertOnPath.c_str())) {
+      bool manualAlertOn = fbdo.boolData(); 
     }
-    sirenAlertTimer = millis() + sirenAlertDuration;
-    Serial.println("ALERT ON: Emergency Fire Siren Activated.");
   }
 
-  if (sirenAlertActive && millis() >= sirenAlertTimer){
-    sirenAlertActive = false;
-    digitalWrite(SIREN_2, LOW);
-    Serial.println("ALERT OFF: Emergency Fire Siren Deactivated.");
+  if (isFireDetected || manualAlert) {
+    if (!sirenAlertActive) {
+      if (isFireDetected) {
+        sirenAlertActive =  true;
+        emergencyMode = true;
+        digitalWrite(SIREN_2,HIGH);
+        sirenAlertDuration = millis() + 180000;
+        Serial.println("FIRE DETECTED! Emergency mode enabled. Siren Activated.");
+      } 
+      else if (manualAlert){
+        sirenAlertActive =  true;
+        emergencyMode = true;
+        digitalWrite(SIREN_2,HIGH);
+        sirenAlertDuration = millis() + 180000;
+        Serial.println("MANUAL OVERRIDE! Emergency mode enabled. Siren Activated.");
+      }
+    }
+  }
+
+  if (sirenAlertActive){
+    String manualAlertOffPath = "/sensor_data" + deviceMAC + "/manual_alert_off";
+    if (Firebase.RTDB.getBool(&fbdo, manualAlertOnPath.c_str())){
+      bool manualAlertOff = fbdo.boolData(); 
+    }
+    if (millis() >= sirenAlertDuration){
+      sirenAlertActive = false;
+      digitalWrite(SIREN_2, LOW);
+      Serial.println("ALERT TIMEOUT! Siren Deactivated. Emergency mode still enabled.");
+    }
+    else if (manualAlertOff) {
+      sirenAlertActive = false;
+      emergencyMode = false;
+      digitalWrite(SIREN_2, LOW);
+      Serial.println("MANUAL OVERRIDE! Siren Deactivated. Emergency mode disabled.");
+    }
   }
 }
 
 void triggerClearSiren(){
-  bool clearStatus = sirenAlertActive && totalInside == 0;
-  if (clearStatus){
-    if (!sirenClearActive){
-      sirenClearActive = true;
-      digitalWrite(SIREN_1, HIGH);
-      sirenClearTimer = millis() + sirenClearDuration;
+  bool clearStatus = totalInside == 0;
+  unsigned long sirenClearDuration = 0; 
+  if (Firebase.ready()){
+    String manualClearOnPath = "/sensor_data" + deviceMAC + "/manual_clear_on";
+    if (Firebase.RTDB.getBool(&fbdo, manualClearOnPath.c_str())) {
+      bool manualClearOn = fbdo.boolData(); 
     }
-    Serial.println("AREA CLEAR: All personnel have evacuated the premises.");
-    clearStatus = false;
+  }
+  if (clearStatus || manualClearOn){
+    if (!sirenClearActive){
+      if (clearStatus){
+        sirenClearActive = true;
+        digitalWrite(SIREN_1, HIGH);
+        sirenClearDuration = millis() + 60000;
+        emergencyMode = false;
+        Serial.println("AREA CLEAR! All personnel had successfully evacuated the area.")
+      }
+      if (manualClearOn){
+        sirenClearActive = true;
+        digitalWrite(SIREN_1, HIGH);
+        sirenClearDuration = millis() + 60000;
+        emergencyMode = false;
+        Serial.println("MANUAL OVERRIDE! All personnel had successfully evacuated the area.")
+      }
+    }
   }
 
-  if (sirenClearActive && millis() >= sirenClearTimer) {
+  if (sirenClearActive && millis() >= sirenClearDuration) {
     sirenClearActive = false;
     digitalWrite(SIREN_1, LOW);
   }
@@ -431,6 +474,8 @@ void loop() {
   readEnvironment();
   countCrowd();
   triggerAlertSiren();
-  triggerClearSiren();
+  if (emergencyMode){
+    triggerClearSiren();
+  }
   uploadData();
 }
