@@ -39,7 +39,7 @@ NTPClient timeClient(ntpUDP, "pool.ntp.org");
 const unsigned long FIREBASE_SEND_INTERVAL = 7000; // Interval for sending data in the database
 unsigned long lastFirebaseSendTime = 0;
 bool firebaseConnected = false;
-const String deviceMAC = "40:22:D8:5A:FA:24";
+String deviceMAC = "00:00:00:00:00:00";
 //ToF Variables
 bool tofSuccess = false;
 const int PERSON_THRESHOLD_MM = 500; 
@@ -75,6 +75,17 @@ const float powerRatio = (Resistor1 + Resistor2)/Resistor2;
 const float upperPowerThreshold = 11.5;
 const float lowerPowerThreshold = 10.8;
 String powerStatus;
+
+void getDeviceMAC(){
+  WiFi.begin();
+  deviceMAC = WiFi.macAddress();
+  if (deviceMAC == "00:00:00:00:00:00"){
+    Serial.println("ERROR: Cannot obtain device MAC Address.");
+  }
+  else if (deviceMAC != "00:00:00:00:00:00"){
+    Serial.println("Device Mac Address: " + deviceMAC);
+  }
+}
 
 void connectNetwork(){
     // WiFi and Firebase Setup
@@ -408,6 +419,8 @@ void setup() {
   // Initialize DS18B20
   sensors.begin();
   Serial.println("DS18B20 Initialized.");
+
+  getDeviceMAC();
   checkPowerStatus();
   connectNetwork();
   Serial.println("--- Setup Complete ---");
