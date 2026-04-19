@@ -67,6 +67,8 @@ unsigned long sirenClearTimer = 0;
 const unsigned long sirenAlertDuration = 5000; 
 const unsigned long sirenClearDuration = 60000; 
 // Power Variables - Voltage Divider
+const unsigned long checkPowerInterval = 5000;
+unsigned long lastPowerCheckedTime = 0;
 const float Resistor1 = 10000.0;
 const float Resistor2 = 3300.0;
 const float powerRatio = (Resistor1 + Resistor2)/Resistor2;
@@ -131,19 +133,22 @@ void connectDB(){
 }
 
 void checkPowerStatus(){
-  int rawPinReading = analogRead(UPS_POWER_INDICATOR);
-  float pinVoltage = (rawPinReading / 4095.0)*3.3;
-  float upsVoltage = pinVoltage * powerRatio;
-
-  if (upsVoltage >= upperPowerThreshold) {
-    powerStatus = "High";
-  } else if (upsVoltage < upperPowerThreshold && upsVoltage >= lowerPowerThreshold){
-    powerStatus = "Adequate";
-  } else{
-    powerStatus = "Low";
+  if (firebaseConnected && (millis() - lastPowerCheckedTime >= checkPowerInterval)){
+    lastPowerCheckedTime = millis();
+    int rawPinReading = analogRead(UPS_POWER_INDICATOR);
+    float pinVoltage = (rawPinReading / 4095.0)*3.3;
+    float upsVoltage = pinVoltage * powerRatio;
+    if (upsVoltage >= upperPowerThreshold) {
+      powerStatus = "High";
+    } 
+    else if (upsVoltage < upperPowerThreshold && upsVoltage >= lowerPowerThreshold){
+      powerStatus = "Adequate";
+    } 
+    else{
+      powerStatus = "Low";
   }
-  Serial.print("Power Status: ");
-  Serial.print(powerStatus);
+  Serial.println("Power Status: " + powerStatus);
+  }
 }
 
 void readEnvironment(){
