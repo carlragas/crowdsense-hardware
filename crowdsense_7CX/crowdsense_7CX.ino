@@ -36,7 +36,7 @@ WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org");
 
 //Database Variables
-const unsigned long FIREBASE_SEND_INTERVAL = 7000; // Interval for sending data in the database
+const unsigned long FIREBASE_SEND_INTERVAL = 90000; // Interval for sending data in the database
 unsigned long lastFirebaseSendTime = 0;
 bool firebaseConnected = false;
 String deviceMAC = "00:00:00:00:00:00";
@@ -63,6 +63,10 @@ unsigned long lastEnvReadTime = 0;
 bool emergencyMode = false;
 bool sirenAlertActive = false;
 bool sirenClearActive = false;
+unsigned long sirenAlertDuration = 0;
+unsigned long sirenClearDuration = 0;
+const unsigned long ManualCheckInterval = 60000;
+unsigned long lastManualCheckTime = 0;
 // Power Variables - Voltage Divider
 const unsigned long checkPowerInterval = 5000;
 unsigned long lastPowerCheckedTime = 0;
@@ -264,85 +268,150 @@ void countCrowd(){
   }
 }
 
-void triggerAlertSiren(){
-  bool isFireDetected = (!currentMainFlameValue || currentBackupFlameValue <= 1000) && (currentGasValue >= 600);
-  unsigned long sirenAlertDuration = 0;
+bool manualTrigger(int caller){
   if (Firebase.ready()){
     String manualAlertOnPath = "/sensor_data" + deviceMAC + "/manual_alert_on";
-    if (Firebase.RTDB.getBool(&fbdo, manualAlertOnPath.c_str())) {
-      bool manualAlertOn = fbdo.boolData(); 
-    }
-  }
-
-  if (isFireDetected || manualAlert) {
-    if (!sirenAlertActive) {
-      if (isFireDetected) {
-        sirenAlertActive =  true;
-        emergencyMode = true;
-        digitalWrite(SIREN_2,HIGH);
-        sirenAlertDuration = millis() + 180000;
-        Serial.println("FIRE DETECTED! Emergency mode enabled. Siren Activated.");
-      } 
-      else if (manualAlert){
-        sirenAlertActive =  true;
-        emergencyMode = true;
-        digitalWrite(SIREN_2,HIGH);
-        sirenAlertDuration = millis() + 180000;
-        Serial.println("MANUAL OVERRIDE! Emergency mode enabled. Siren Activated.");
-      }
-    }
-  }
-
-  if (sirenAlertActive){
     String manualAlertOffPath = "/sensor_data" + deviceMAC + "/manual_alert_off";
-    if (Firebase.RTDB.getBool(&fbdo, manualAlertOnPath.c_str())){
-      bool manualAlertOff = fbdo.boolData(); 
-    }
-    if (millis() >= sirenAlertDuration){
-      sirenAlertActive = false;
-      digitalWrite(SIREN_2, LOW);
-      Serial.println("ALERT TIMEOUT! Siren Deactivated. Emergency mode still enabled.");
-    }
-    else if (manualAlertOff) {
-      sirenAlertActive = false;
-      emergencyMode = false;
-      digitalWrite(SIREN_2, LOW);
-      Serial.println("MANUAL OVERRIDE! Siren Deactivated. Emergency mode disabled.");
+    String manualClearOnPath = "/sensor_data" + deviceMAC + "/manual_clear_on";
+    String manualClearOffPath = "/sensor_data" + deviceMAC + "/manual_clear_off";
+    switch(caller){
+      case 1:
+        if (!sirenAlertActive){
+          if (Firebase.RTDB.getBool(&fbdo, manualAlertOnPath.c_str())) {
+            return fbdo.boolData();
+          }
+        } else if (sirenAlertActive){
+          if (Firebase.RTDB.getBool(&fbdo, manualAlertOffPath.c_str())){
+            return fbdo.boolData();
+          }
+        }
+        if ((!Firebase.RTDB.getBool(&fbdo, manualAlertOnPath.c_str())) || (Firebase.RTDB.getBool(&fbdo, manualAlertOffPath.c_str()))){
+          return false;
+          Serial.println("ERROR: Unable to retrieve manual alert status.");
+        }
+        break;
+
+      case 2:
+        if (!sirenClearActive){
+          
+          if (Firebase.RTDB.getBool(&fbdo, manualClearOnPath.c_str())) {
+            return fbdo.boolData();
+          }
+        }
+        else if (sirenClearActive){
+          
+          if (Firebase.RTDB.getBool(&fbdo, manualClearOffPath.c_str())) {
+            return fbdo.boolData();
+          }
+        }
+        if ((!Firebase.RTDB.getBool(&fbdo, manualClearOnPath.c_str())) || (Firebase.RTDB.getBool(&fbdo, manualClearOffPath.c_str()))){
+          return false;
+          Serial.println("ERROR: Unable to retrieve manual alert status.");
+        }
+        break;
+
+      default:
+        return false;
+        Serial.println("ERROR: Unknown Caller.");
     }
   }
 }
 
-void triggerClearSiren(){
-  bool clearStatus = totalInside == 0;
-  unsigned long sirenClearDuration = 0; 
-  if (Firebase.ready()){
-    String manualClearOnPath = "/sensor_data" + deviceMAC + "/manual_clear_on";
-    if (Firebase.RTDB.getBool(&fbdo, manualClearOnPath.c_str())) {
-      bool manualClearOn = fbdo.boolData(); 
+void activateAlertSiren(){
+  if (!sirenAlertActive && !emergencyMode){
+    bool isFireDetected = (!currentMainFlameValue || currentBackupFlameValue <= 1000) && (currentGasValue >= 600);
+    bool manualAlert = false;
+    if (firebaseConnected && (millis() - lastManualCheckTime >= ManualCheckInterval)){
+      lastManualCheckTime = millis();
+      manualAlert = manualTrigger(1);
+    }
+    if (isFireDetected){
+      sirenAlertActive =  true;
+      emergencyMode = true;
+      digitalWrite(SIREN_2,HIGH);
+      sirenAlertDuration = millis() + 180000;
+      Serial.println("FIRE DETECTED: Emergency mode enabled. Siren Activated.");
+    }
+    else if (manualAlert){
+      manualAlert = false;
+      sirenAlertActive =  true;
+      emergencyMode = true;
+      digitalWrite(SIREN_2,HIGH);
+      sirenAlertDuration = millis() + 180000;
+      Serial.println("MANUAL OVERRIDE: Emergency mode enabled. Siren Activated.");
     }
   }
-  if (clearStatus || manualClearOn){
-    if (!sirenClearActive){
-      if (clearStatus){
-        sirenClearActive = true;
-        digitalWrite(SIREN_1, HIGH);
-        sirenClearDuration = millis() + 60000;
-        emergencyMode = false;
-        Serial.println("AREA CLEAR! All personnel had successfully evacuated the area.")
-      }
-      if (manualClearOn){
-        sirenClearActive = true;
-        digitalWrite(SIREN_1, HIGH);
-        sirenClearDuration = millis() + 60000;
-        emergencyMode = false;
-        Serial.println("MANUAL OVERRIDE! All personnel had successfully evacuated the area.")
-      }
-    }
-  }
+}
 
-  if (sirenClearActive && millis() >= sirenClearDuration) {
-    sirenClearActive = false;
-    digitalWrite(SIREN_1, LOW);
+void deactivateAlertSiren(){
+  if (sirenAlertActive &&  emergencyMode){
+    bool manualAlert = false;
+    if (firebaseConnected && (millis() - lastManualCheckTime >= ManualCheckInterval)){
+      lastManualCheckTime = millis();
+      manualAlert = manualTrigger(1);
+    }
+    if (millis() >= sirenAlertDuration){
+      sirenAlertDuration = 0;
+      sirenAlertActive = false;
+      digitalWrite(SIREN_2, LOW);
+      Serial.println("SIREN TIMEOUT! Alert siren deactivated. Emergency mode still enabled.");
+    }
+    else if (manualAlert) {
+      sirenAlertDuration = 0;
+      sirenAlertActive = false;
+      emergencyMode = false;
+      digitalWrite(SIREN_2, LOW);
+      Serial.println("MANUAL OVERRIDE! Alert siren deactivated. Emergency mode disabled.");
+    }
+  }
+}
+
+void activateClearSiren(){
+  if (!sirenClearActive && emergencyMode){
+    bool clearStatus = totalInside == 0; 
+    bool manualClear = false;
+    if (firebaseConnected && (millis() - lastManualCheckTime >= ManualCheckInterval)){
+      lastManualCheckTime = millis();
+      manualClear = manualTrigger(2);
+    }
+
+    if (clearStatus){
+      sirenClearActive = true;
+      digitalWrite(SIREN_1, HIGH);
+      sirenClearDuration = millis() + 60000;
+      emergencyMode = false;
+      Serial.println("AREA CLEAR: All personnel had successfully evacuated the area.");
+    }
+
+    if (manualClear){
+        sirenClearActive = true;
+        digitalWrite(SIREN_1, HIGH);
+        sirenClearDuration = millis() + 60000;
+        emergencyMode = false;
+        Serial.println("MANUAL OVERRIDE: All personnel had successfully evacuated the area.");
+      }
+  }
+}
+
+void deactivateClearSiren(){
+  if (sirenClearActive){
+    bool manualClear = false;
+    if (firebaseConnected && (millis() - lastManualCheckTime >= ManualCheckInterval)){
+      lastManualCheckTime = millis();
+      manualClear = manualTrigger(2);
+    }
+
+    if (millis() >= sirenClearDuration) {
+      sirenClearActive = false;
+      digitalWrite(SIREN_1, LOW);
+      Serial.println("SIREN TIMEOUT: Clear siren deactivated.");
+    }
+
+    if(manualClear){
+      sirenClearActive = false;
+      digitalWrite(SIREN_1, LOW);
+      Serial.println("MANUAL OVERRIDE: Clear siren deactivated.");
+    }
   }
 }
 
@@ -473,9 +542,9 @@ void loop() {
   checkPowerStatus();
   readEnvironment();
   countCrowd();
-  triggerAlertSiren();
-  if (emergencyMode){
-    triggerClearSiren();
-  }
+  activateAlertSiren();
+  deactivateAlertSiren();
+  activateClearSiren();
+  deactivateClearSiren();
   uploadData();
 }
