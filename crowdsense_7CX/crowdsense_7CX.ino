@@ -120,7 +120,7 @@ void connectDB(){
     firebaseConnected = true;
     Serial.println("Firebase connected successfully!");
     // Send initial device status
-    String deviceStatusPath = "/sensor_data/" + deviceMAC + "/status";
+    String deviceStatusPath = "/sensor_data/" + deviceMAC + "/device_status";
     Firebase.RTDB.setString(&fbdo, deviceStatusPath.c_str(), esp32Online);
     Firebase.RTDB.setInt(&fbdo, "/sensor_data/" + deviceMAC + "/timestamp", millis());
     timeClient.begin();
@@ -487,6 +487,9 @@ void uploadData(){
       // Send Power Status
       String powerStatusPath = basePath + "power_status";
       Firebase.RTDB.setString(&fbdo, powerStatusPath.c_str(), powerStatus);
+
+      String deviceStatusPath = "/sensor_data/" + deviceMAC + "/device_status";
+      Firebase.RTDB.setString(&fbdo, deviceStatusPath.c_str(), esp32Online);
       
       Serial.println("--- Firebase data update complete ---");
       
@@ -513,8 +516,8 @@ void setup() {
   pinMode(UPS_POWER_INDICATOR, INPUT);
   pinMode(SIREN_1, OUTPUT);
   pinMode(SIREN_2, OUTPUT);
-  digitalWrite(SIREN_1, LOW);
-  digitalWrite(SIREN_2, LOW);
+  digitalWrite(SIREN_1, HIGH);
+  digitalWrite(SIREN_2, HIGH);
   // Initialize VL53L7CX 
   sensor.begin(); // Setup I2C interface
   if (sensor.init_sensor() != 0) {
