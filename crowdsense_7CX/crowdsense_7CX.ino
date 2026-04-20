@@ -119,14 +119,6 @@ void connectDB(){
   if (Firebase.ready()) {
     firebaseConnected = true;
     Serial.println("Firebase connected successfully!");
-    // Send initial device status
-    String deviceStatusPath = "/sensor_data/" + deviceMAC + "/device_status";
-    Firebase.RTDB.setString(&fbdo, deviceStatusPath.c_str(), esp32Online);
-    Firebase.RTDB.setInt(&fbdo, "/sensor_data/" + deviceMAC + "/timestamp", millis());
-    timeClient.begin();
-    // Set offset time in seconds to adjust for your timezone 
-    // GMT+8 (Philippines) = 8 * 60 * 60 = 28800
-    timeClient.setTimeOffset(28800);
     } else {
       Serial.println("Firebase connection failed!");
       firebaseConnected = false;
@@ -418,86 +410,36 @@ void deactivateClearSiren(){
 void uploadData(){
   if (firebaseConnected && (millis() - lastFirebaseSendTime >= FIREBASE_SEND_INTERVAL)) {
     lastFirebaseSendTime = millis();
-    // Check if Firebase is ready
-    if (Firebase.ready()) {
+    
+    // CRITICAL: Update the NTP client to get the latest time from the internet
+    timeClient.update();
+    unsigned long epochTime = timeClient.getEpochTime();
+
+    // Only upload if we have a valid year (Epoch > 1,000,000 means we are past 1970)
+    if (Firebase.ready() && epochTime > 1000000) {
       String basePath = "/sensor_data/" + deviceMAC + "/";
-      // Send Temperature
-      String tempPath = basePath + "temperature";
-      if (Firebase.RTDB.setFloat(&fbdo, tempPath.c_str(), currentTempC)) {
-        Serial.print("✓ Temperature sent: ");
-        Serial.println(currentTempC);
-      } 
-      else {
-        Serial.print("✗ Temperature send failed: ");
-        Serial.println(fbdo.errorReason());
-      }
       
-      // Send Gas value (analog and percentage)
-      String gasPath = basePath + "gas";
-      if (Firebase.RTDB.setInt(&fbdo, gasPath.c_str(), currentGasValue)) {
-        Serial.print("✓ Gas analog sent: ");
-        Serial.println(currentGasValue);
-      } else {
-        Serial.print("✗ Gas analog send failed: ");
-        Serial.println(fbdo.errorReason());
-      }
+      // FIX: Use double. It can safely hold the massive 13-digit millisecond number.
+      double currentEpochMillis = (double)epochTime * 1000.0;
+
+      // Send Data
+      Firebase.RTDB.setFloat(&fbdo, (basePath + "temperature").c_str(), currentTempC);
+      Firebase.RTDB.setInt(&fbdo, (basePath + "gas").c_str(), currentGasValue);
+      Firebase.RTDB.setInt(&fbdo, (basePath + "flame").c_str(), currentBackupFlameValue);
+      Firebase.RTDB.setInt(&fbdo, (basePath + "people_inside").c_str(), totalInside);
+      Firebase.RTDB.setInt(&fbdo, (basePath + "total_entries").c_str(), totalEntries);
+      Firebase.RTDB.setInt(&fbdo, (basePath + "total_exits").c_str(), totalExits);
+      Firebase.RTDB.setBool(&fbdo, (basePath + "siren_alert_active").c_str(), sirenAlertActive);
+      Firebase.RTDB.setBool(&fbdo, (basePath + "siren_clear_active").c_str(), sirenClearActive);
+      Firebase.RTDB.setString(&fbdo, (basePath + "power_status").c_str(), powerStatus);
       
-      // Send Flame value
-      String flamePath = basePath + "flame";
-      if (Firebase.RTDB.setInt(&fbdo, flamePath.c_str(), currentBackupFlameValue)) {
-        Serial.print("✓ Flame analog sent: ");
-        Serial.println(currentBackupFlameValue);
-      } else {
-        Serial.print("✗ Flame analog send failed: ");
-        Serial.println(fbdo.errorReason());
-      }
-      
-      // Send People count data
-      String peopleInsidePath = basePath + "people_inside";
-      if (Firebase.RTDB.setInt(&fbdo, peopleInsidePath.c_str(), totalInside)) {
-        Serial.print("✓ People inside sent: ");
-        Serial.println(totalInside);
-      }
-      
-      String entriesPath = basePath + "total_entries";
-      Firebase.RTDB.setInt(&fbdo, entriesPath.c_str(), totalEntries);
-      
-      String exitsPath = basePath + "total_exits";
-      Firebase.RTDB.setInt(&fbdo, exitsPath.c_str(), totalExits);
-      
-      timeClient.begin();
-      // Set offset time in seconds to adjust for your timezone 
-      // GMT+8 (Philippines) = 8 * 60 * 60 = 28800
-      timeClient.setTimeOffset(28800);
-      // Send timestamp
-      unsigned long epochTime = timeClient.getEpochTime();
-      // To get currentEpochMillis (Milliseconds)
-      // Note: Most NTP libraries return seconds. We multiply by 1000 
-      // and add the internal millis() remainder for precision.
-      long long currentEpochMillis = ((long long)epochTime * 1000) + (millis() % 1000);
-      String timestampPath = basePath + "last_updated";
-      Firebase.RTDB.setInt(&fbdo, timestampPath.c_str(), currentEpochMillis);
+      // FIX: Use setDouble instead of setLongLong
+      Firebase.RTDB.setDouble(&fbdo, (basePath + "last_updated").c_str(), currentEpochMillis);
   
-      // Send siren status
-      String sirenAlertPath = basePath + "siren_alert_active";
-      Firebase.RTDB.setBool(&fbdo, sirenAlertPath.c_str(), sirenAlertActive);
-      String sirenClearPath = basePath + "siren_clear_active";
-      Firebase.RTDB.setBool(&fbdo, sirenClearPath.c_str(), sirenClearActive);
-
-      // Send Power Status
-      String powerStatusPath = basePath + "power_status";
-      Firebase.RTDB.setString(&fbdo, powerStatusPath.c_str(), powerStatus);
-
-      String deviceStatusPath = "/sensor_data/" + deviceMAC + "/device_status";
-      Firebase.RTDB.setString(&fbdo, deviceStatusPath.c_str(), esp32Online);
+      Serial.println("--- Firebase data update complete (Synced with NTP) ---");
       
-      Serial.println("--- Firebase data update complete ---");
-      
-    } else {
-      Serial.println("Firebase not ready. Reconnecting...");
-      // Attempt to reconnect
-      Firebase.begin(&config, &auth);
-      delay(100);
+    } else if (epochTime <= 1000000) {
+      Serial.println("Waiting for NTP sync... skipping Firebase upload to avoid 1970 error.");
     }
   }
 }
