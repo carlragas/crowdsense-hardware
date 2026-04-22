@@ -36,10 +36,11 @@ WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org");
 
 //Database Variables
-const unsigned long FIREBASE_SEND_INTERVAL = 90000; // Interval for sending data in the database
+const unsigned long FIREBASE_SEND_INTERVAL = 900000; // Interval for sending data in the database
 unsigned long lastFirebaseSendTime = 0;
 bool firebaseConnected = false;
 String deviceMAC = "00:00:00:00:00:00";
+String pathBase;
 //ToF Variables
 bool tofSuccess = false;
 const int PERSON_THRESHOLD_MM = 500; 
@@ -57,6 +58,9 @@ float currentTempC = 0.0;
 int currentGasValue = 0;
 bool currentMainFlameValue = true;
 int currentBackupFlameValue = 0;
+float tempThreshold;
+int flameThreshold;
+int gasThreshold;
 bool esp32Online = true;
 unsigned long lastEnvReadTime = 0; 
 // Siren Variables
@@ -65,6 +69,7 @@ bool sirenAlertActive = false;
 bool sirenClearActive = false;
 unsigned long sirenAlertDuration = 0;
 unsigned long sirenClearDuration = 0;
+String pathAlertOn, pathAlertOff;
 const unsigned long ManualCheckInterval = 60000;
 unsigned long lastManualCheckTime = 0;
 // Power Variables - Voltage Divider
@@ -76,6 +81,15 @@ const float powerRatio = (Resistor1 + Resistor2)/Resistor2;
 const float upperPowerThreshold = 11.5;
 const float lowerPowerThreshold = 10.8;
 String powerStatus;
+
+void pinConfig(){
+  pinMode(BACKUP_FLAME_DIGITAL, INPUT);
+  pinMode(MAIN_FLAME, INPUT_PULLUP);
+  pinMode(GAS_DIGITAL, INPUT);
+  pinMode(UPS_POWER_INDICATOR, INPUT);
+  pinMode(SIREN_1, OUTPUT);
+  pinMode(SIREN_2, OUTPUT);
+}
 
 void getDeviceMAC(){
   WiFi.begin();
@@ -260,6 +274,43 @@ void countCrowd(){
   }
 }
 
+void getSensorThreshold(){
+  if (Firebase.ready()){
+    if (Firebase.RTDB.getFloat(&fbdo, (pathBase + "temperature_threshold").c_str())){
+       if (fbdo.dataType() == "float"){
+        tempThreshold = fbdo.floatData();
+       } else if (fbdo.dataType() == "null"){
+        Serial.println("Temperature threshold path not found. Assigning default threshold values.");
+        tempThreshold = 57.0;
+       }
+    }
+
+    if (Firebase.RTDB.getInt(&fbdo, (pathBase + "smoke_threshold").c_str())){
+       if (fbdo.dataType() == "int"){
+        gasThreshold = fbdo.intData();
+       } else if (fbdo.dataType() == "null"){
+        Serial.println("Gas threshold path not found. Assigning default threshold values.");
+        gasThreshold = 500;
+       }
+    }
+
+    if (Firebase.RTDB.getInt(&fbdo, (pathBase + "flame_threshold").c_str())){
+       if (fbdo.dataType() == "int"){
+        flameThreshold = fbdo.intData();
+       } else if (fbdo.dataType() == "null"){
+        Serial.println("Flame threshold path not found. Assigning default threshold values.");
+        flameThreshold = 2000;
+       }
+    }
+  
+  } else {
+    Serial.println("Unable to connect to database. Assigning default threshold values.");
+    tempThreshold = 57.0;
+    flameThreshold = 2000;
+    gasThreshold = 500;
+  }
+}
+
 bool manualTrigger(int caller){
   if (Firebase.ready()){
     String manualAlertOnPath = "/sensor_data" + deviceMAC + "/manual_alert_on";
@@ -417,24 +468,22 @@ void uploadData(){
 
     // Only upload if we have a valid year (Epoch > 1,000,000 means we are past 1970)
     if (Firebase.ready() && epochTime > 1000000) {
-      String basePath = "/sensor_data/" + deviceMAC + "/";
-      
       // FIX: Use double. It can safely hold the massive 13-digit millisecond number.
       double currentEpochMillis = (double)epochTime * 1000.0;
 
       // Send Data
-      Firebase.RTDB.setFloat(&fbdo, (basePath + "temperature").c_str(), currentTempC);
-      Firebase.RTDB.setInt(&fbdo, (basePath + "gas").c_str(), currentGasValue);
-      Firebase.RTDB.setInt(&fbdo, (basePath + "flame").c_str(), currentBackupFlameValue);
-      Firebase.RTDB.setInt(&fbdo, (basePath + "people_inside").c_str(), totalInside);
-      Firebase.RTDB.setInt(&fbdo, (basePath + "total_entries").c_str(), totalEntries);
-      Firebase.RTDB.setInt(&fbdo, (basePath + "total_exits").c_str(), totalExits);
-      Firebase.RTDB.setBool(&fbdo, (basePath + "siren_alert_active").c_str(), sirenAlertActive);
-      Firebase.RTDB.setBool(&fbdo, (basePath + "siren_clear_active").c_str(), sirenClearActive);
-      Firebase.RTDB.setString(&fbdo, (basePath + "power_status").c_str(), powerStatus);
+      Firebase.RTDB.setFloat(&fbdo, (pathBase + "temperature").c_str(), currentTempC);
+      Firebase.RTDB.setInt(&fbdo, (pathBase + "gas").c_str(), currentGasValue);
+      Firebase.RTDB.setInt(&fbdo, (pathBase + "flame").c_str(), currentBackupFlameValue);
+      Firebase.RTDB.setInt(&fbdo, (pathBase + "people_inside").c_str(), totalInside);
+      Firebase.RTDB.setInt(&fbdo, (pathBase + "total_entries").c_str(), totalEntries);
+      Firebase.RTDB.setInt(&fbdo, (pathBase + "total_exits").c_str(), totalExits);
+      Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_alert_active").c_str(), sirenAlertActive);
+      Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_clear_active").c_str(), sirenClearActive);
+      Firebase.RTDB.setString(&fbdo, (pathBase + "power_status").c_str(), powerStatus);
       
       // FIX: Use setDouble instead of setLongLong
-      Firebase.RTDB.setDouble(&fbdo, (basePath + "last_updated").c_str(), currentEpochMillis);
+      Firebase.RTDB.setDouble(&fbdo, (pathBase + "last_updated").c_str(), currentEpochMillis);
   
       Serial.println("--- Firebase data update complete (Synced with NTP) ---");
       
@@ -451,13 +500,7 @@ void setup() {
   // Initialize I2C for ESP32
   Wire.begin(I2C_SDA, I2C_SCL);
   Wire.setClock(400000); 
-  // Configure Digital Pins
-  pinMode(BACKUP_FLAME_DIGITAL, INPUT);
-  pinMode(MAIN_FLAME, INPUT_PULLUP);
-  pinMode(GAS_DIGITAL, INPUT);
-  pinMode(UPS_POWER_INDICATOR, INPUT);
-  pinMode(SIREN_1, OUTPUT);
-  pinMode(SIREN_2, OUTPUT);
+  pinConfig();
   digitalWrite(SIREN_1, HIGH);
   digitalWrite(SIREN_2, HIGH);
   // Initialize VL53L7CX 
@@ -478,6 +521,8 @@ void setup() {
   Serial.println("DS18B20 Initialized.");
 
   getDeviceMAC();
+  pathBase = "/sensor_data/" + deviceMAC + "/";
+
   checkPowerStatus();
   connectNetwork();
   Serial.println("--- Setup Complete ---");
