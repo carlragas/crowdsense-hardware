@@ -362,7 +362,7 @@ bool manualTrigger(int caller){
 
 void activateAlertSiren(){
   if (!sirenAlertActive && !emergencyMode){
-    bool isFireDetected = (!currentMainFlameValue || currentBackupFlameValue <= flameThreshold) && (gasThreshold >= 600);
+    bool isFireDetected = (!currentMainFlameValue || currentBackupFlameValue <= flameThreshold) && (currentGasValue >= gasThreshold);
     bool manualAlert = false;
     if (firebaseConnected && (millis() - lastManualCheckTime >= ManualCheckInterval)){
       lastManualCheckTime = millis();
