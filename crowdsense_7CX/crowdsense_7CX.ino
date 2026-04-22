@@ -362,7 +362,7 @@ bool manualTrigger(int caller){
 
 void activateAlertSiren(){
   if (!sirenAlertActive && !emergencyMode){
-    bool isFireDetected = (!currentMainFlameValue || currentBackupFlameValue <= 1000) && (currentGasValue >= 600);
+    bool isFireDetected = (!currentMainFlameValue || currentBackupFlameValue <= flameThreshold) && (currentGasValue >= gasThreshold);
     bool manualAlert = false;
     if (firebaseConnected && (millis() - lastManualCheckTime >= ManualCheckInterval)){
       lastManualCheckTime = millis();
@@ -521,7 +521,9 @@ void setup() {
   Serial.println("DS18B20 Initialized.");
 
   getDeviceMAC();
+
   pathBase = "/sensor_data/" + deviceMAC + "/";
+  getSensorThreshold();
 
   checkPowerStatus();
   connectNetwork();
