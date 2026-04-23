@@ -9,7 +9,6 @@
 #include <WiFiUdp.h>
 #include <Firebase_ESP_Client.h>
 #include <addons/TokenHelper.h>
-
 // Pin Configurations
 #define ONE_WIRE_BUS 4
 #define BACKUP_FLAME_DIGITAL 5
@@ -24,7 +23,6 @@
 #define GAS 35
 #define FIREBASE_HOST "https://crowdsense-db-default-rtdb.asia-southeast1.firebasedatabase.app/"
 #define FIREBASE_LEGACY_TOKEN "5mGeiwSA9PLndbFmJZtC8x7a9U78VaM0H21nh1nd"
-
 //Initializations
 VL53L7CX sensor(&Wire, -1, -1); // The library expects (Wire, LPN_PIN, RST_PIN). Using -1 for unused reset pins.
 OneWire oneWire(ONE_WIRE_BUS);
@@ -34,12 +32,20 @@ FirebaseAuth auth;
 FirebaseConfig config;
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org");
-
 //Database Variables
-const unsigned long FIREBASE_SEND_INTERVAL = 900000; // Interval for sending data in the database
+const unsigned long FIREBASE_SEND_INTERVAL = 900000; // 15 mins for full sensor data
+const unsigned long HEARTBEAT_INTERVAL = 5000;       // 5 seconds for online status heartbeat
 unsigned long lastFirebaseSendTime = 0;
+unsigned long lastHeartbeatTime = 0;
 bool firebaseConnected = false;
 String deviceMAC = "00:00:00:00:00:00";
+// Instant Upload Tracking Variables (To detect changes)
+int lastTotalInside = -1;
+int lastTotalEntries = -1;
+int lastTotalExits = -1;
+bool lastSirenAlertActive = false;
+bool lastSirenClearActive = false;
+bool lastEmergencyState = false;
 // Path Base
 String pathManualAlertOn;
 String pathManualAlertOff;
@@ -90,7 +96,6 @@ const float powerRatio = (Resistor1 + Resistor2)/Resistor2;
 const float upperPowerThreshold = 11.5;
 const float lowerPowerThreshold = 10.8;
 String powerStatus;
-
 void pinConfig(){
   pinMode(BACKUP_FLAME_DIGITAL, INPUT);
   pinMode(MAIN_FLAME, INPUT_PULLUP);
@@ -99,7 +104,6 @@ void pinConfig(){
   pinMode(SIREN_1, OUTPUT);
   pinMode(SIREN_2, OUTPUT);
 }
-
 void getDeviceMAC(){
   WiFi.begin();
   deviceMAC = WiFi.macAddress();
@@ -110,7 +114,6 @@ void getDeviceMAC(){
     Serial.println("Device Mac Address: " + deviceMAC);
   }
 }
-
 void connectNetwork(){
     // WiFi and Firebase Setup
   WiFi.mode(WIFI_STA);
@@ -128,7 +131,6 @@ void connectNetwork(){
     connectDB();
   }
 }
-
 void connectDB(){
   // Configure Firebase
   config.database_url = FIREBASE_HOST;
@@ -147,7 +149,6 @@ void connectDB(){
       firebaseConnected = false;
     }
 }
-
 void checkPowerStatus(){
   if (firebaseConnected && (millis() - lastPowerCheckedTime >= checkPowerInterval)){
     lastPowerCheckedTime = millis();
@@ -166,7 +167,6 @@ void checkPowerStatus(){
   Serial.println("Power Status: " + powerStatus);
   }
 }
-
 void readEnvironment(){
   if (millis() - lastEnvReadTime >= 1000) {
   lastEnvReadTime = millis();
@@ -182,21 +182,16 @@ void readEnvironment(){
     Serial.print("People Inside: "); Serial.println(totalInside);
   }
 }
-
 void countCrowd(){
   if (tofSuccess) {
     VL53L7CX_ResultsData results;
     uint8_t dataReady = 0;
-
     // Use the specific check function from the library
     sensor.vl53l7cx_check_data_ready(&dataReady);
-
     if (dataReady) {
       sensor.vl53l7cx_get_ranging_data(&results);
-
       bool laneA[4] = {false, false, false, false}; 
       bool laneB[4] = {false, false, false, false}; 
-
       for (int y = 0; y < 4; y++) {
         for (int x = 0; x < 4; x++) {
           int zone = x + (y * 4); 
@@ -207,25 +202,20 @@ void countCrowd(){
           int targetIndex = zone * VL53L7CX_NB_TARGET_PER_ZONE;
           int distance = results.distance_mm[targetIndex];
           uint8_t status = results.target_status[targetIndex];
-
           if ((status == 5 || status == 6 || status == 9) && distance > 0 && distance < PERSON_THRESHOLD_MM) {
             if (y < 2) laneA[x] = true; 
             else laneB[x] = true;       
           }
         }
       }
-
       unsigned long currentMillis = millis();
       bool globalA = false; 
       bool globalB = false;
-
       for (int x = 0; x < 4; x++) {
         if (laneA[x]) globalA = true;
         if (laneB[x]) globalB = true;
-
         bool A = laneA[x];
         bool B = laneB[x];
-
         switch(laneState[x]) {
           case 0: 
             if (A && !B) laneState[x] = 1;
@@ -277,12 +267,10 @@ void countCrowd(){
             break;
         }
       }
-
       if (totalInside < 0) totalInside = 0;
     }
   }
 }
-
 void getSensorThreshold(){
   if (Firebase.ready()){
     if (Firebase.RTDB.getFloat(&fbdo, (pathBase + "temperature_threshold").c_str())){
@@ -293,7 +281,6 @@ void getSensorThreshold(){
         tempThreshold = 57.0;
        }
     }
-
     if (Firebase.RTDB.getInt(&fbdo, (pathBase + "smoke_threshold").c_str())){
        if (fbdo.dataType() == "int"){
         gasThreshold = fbdo.intData();
@@ -302,7 +289,6 @@ void getSensorThreshold(){
         gasThreshold = 500;
        }
     }
-
     if (Firebase.RTDB.getInt(&fbdo, (pathBase + "flame_threshold").c_str())){
        if (fbdo.dataType() == "int"){
         flameThreshold = fbdo.intData();
@@ -319,7 +305,6 @@ void getSensorThreshold(){
     gasThreshold = 500;
   }
 }
-
 // This replaces manualTrigger!
 bool getFirebaseState(String path) {
   if (Firebase.ready()) {
@@ -332,7 +317,6 @@ bool getFirebaseState(String path) {
   }
   return false;
 }
-
 void resetManualTrigger(String path) {
   if (Firebase.ready()) {
     // We use a non-blocking "async" approach or a simple setBool
@@ -340,17 +324,14 @@ void resetManualTrigger(String path) {
     Firebase.RTDB.setBool(&fbdo, path.c_str(), false);
   }
 }
-
 void activateAlertSiren() {
   if (!sirenAlertActive && !emergencyMode) {
     bool isFireDetected = (!currentMainFlameValue || currentBackupFlameValue <= flameThreshold) && (currentGasValue >= gasThreshold);
-
     if (isFireDetected || mAlertOn) {
       sirenAlertActive = true;
       emergencyMode = true;
       digitalWrite(SIREN_2, HIGH);
       sirenAlertDuration = millis() + 180000;
-
       if (mAlertOn) {
         Serial.println("MANUAL OVERRIDE: Alert Siren Activated. Resetting DB flag...");
         resetManualTrigger(pathManualAlertOn); // <--- Resetting the DB
@@ -361,7 +342,6 @@ void activateAlertSiren() {
     }
   }
 }
-
 void deactivateAlertSiren() {
   if (sirenAlertActive) {
     // Timeout logic
@@ -382,17 +362,14 @@ void deactivateAlertSiren() {
     }
   }
 }
-
 void activateClearSiren() {
   if (!sirenClearActive && emergencyMode) {
     bool clearStatus = (totalInside == 0);
-
     if (clearStatus || mClearOn) {
       sirenClearActive = true;
       emergencyMode = false; 
       digitalWrite(SIREN_1, HIGH);
       sirenClearDuration = millis() + 180000; 
-
       if (mClearOn) {
         Serial.println("MANUAL CLEAR: Siren Activated. Resetting DB flag...");
         resetManualTrigger(pathManualClearOn); // <--- Resetting the DB
@@ -403,7 +380,6 @@ void activateClearSiren() {
     }
   }
 }
-
 void deactivateClearSiren() {
   if (sirenClearActive) {
     // Timeout
@@ -424,36 +400,56 @@ void deactivateClearSiren() {
     }
   }
 }
-
 void uploadData(){
-  if (firebaseConnected && (millis() - lastFirebaseSendTime >= FIREBASE_SEND_INTERVAL)) {
-    lastFirebaseSendTime = millis();
-    
+  if (firebaseConnected) {
     timeClient.update();
     unsigned long epochTime = timeClient.getEpochTime();
-
     if (Firebase.ready() && epochTime > 1000000) {
       double currentEpochMillis = (double)epochTime * 1000.0;
-
-      Firebase.RTDB.setFloat(&fbdo, (pathBase + "temperature").c_str(), currentTempC);
-      Firebase.RTDB.setInt(&fbdo, (pathBase + "gas").c_str(), currentGasValue);
-      Firebase.RTDB.setInt(&fbdo, (pathBase + "flame").c_str(), currentBackupFlameValue);
-      Firebase.RTDB.setInt(&fbdo, (pathBase + "people_inside").c_str(), totalInside);
-      Firebase.RTDB.setInt(&fbdo, (pathBase + "total_entries").c_str(), totalEntries);
-      Firebase.RTDB.setInt(&fbdo, (pathBase + "total_exits").c_str(), totalExits);
-      Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_alert_active").c_str(), sirenAlertActive);
-      Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_clear_active").c_str(), sirenClearActive);
-      Firebase.RTDB.setString(&fbdo, (pathBase + "power_status").c_str(), powerStatus);
-      Firebase.RTDB.setDouble(&fbdo, (pathBase + "last_updated").c_str(), currentEpochMillis);
-  
-      Serial.println("--- Firebase data update complete ---");
+      // 1. FAST HEARTBEAT: Send only the timestamp every 5 seconds
+      if (millis() - lastHeartbeatTime >= HEARTBEAT_INTERVAL) {
+        lastHeartbeatTime = millis();
+        Firebase.RTDB.setDouble(&fbdo, (pathBase + "last_updated").c_str(), currentEpochMillis);
+      }
+      // Check if an instant upload is needed due to state changes
+      bool isEmergency = sirenAlertActive || (currentGasValue >= gasThreshold) || (!currentMainFlameValue || currentBackupFlameValue <= flameThreshold);
+      bool stateChanged = (totalInside != lastTotalInside) || 
+                          (totalEntries != lastTotalEntries) || 
+                          (totalExits != lastTotalExits) || 
+                          (sirenAlertActive != lastSirenAlertActive) || 
+                          (sirenClearActive != lastSirenClearActive) ||
+                          (isEmergency != lastEmergencyState);
+      // 2. SLOW UPLOAD (or instant upload if emergency/event happens)
+      if (millis() - lastFirebaseSendTime >= FIREBASE_SEND_INTERVAL || stateChanged) {
+        lastFirebaseSendTime = millis();
+        Firebase.RTDB.setFloat(&fbdo, (pathBase + "temperature").c_str(), currentTempC);
+        Firebase.RTDB.setInt(&fbdo, (pathBase + "gas").c_str(), currentGasValue);
+        Firebase.RTDB.setInt(&fbdo, (pathBase + "flame").c_str(), currentBackupFlameValue);
+        Firebase.RTDB.setInt(&fbdo, (pathBase + "people_inside").c_str(), totalInside);
+        Firebase.RTDB.setInt(&fbdo, (pathBase + "total_entries").c_str(), totalEntries);
+        Firebase.RTDB.setInt(&fbdo, (pathBase + "total_exits").c_str(), totalExits);
+        Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_alert_active").c_str(), sirenAlertActive);
+        Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_clear_active").c_str(), sirenClearActive);
+        Firebase.RTDB.setString(&fbdo, (pathBase + "power_status").c_str(), powerStatus);
+    
+        // Update trackers to match the currently sent data
+        lastTotalInside = totalInside;
+        lastTotalEntries = totalEntries;
+        lastTotalExits = totalExits;
+        lastSirenAlertActive = sirenAlertActive;
+        lastSirenClearActive = sirenClearActive;
+        lastEmergencyState = isEmergency;
+        Serial.println("--- Full Firebase sensor update complete ---");
+      }
       
     } else if (epochTime <= 1000000) {
-      Serial.println("Waiting for NTP sync...");
+      if (millis() - lastHeartbeatTime >= HEARTBEAT_INTERVAL) {
+        lastHeartbeatTime = millis();
+        Serial.println("Waiting for NTP sync...");
+      }
     }
   }
 }
-
 void setup() {
   Serial.begin(115200);
   delay(1000); 
@@ -480,9 +476,7 @@ void setup() {
   // Initialize DS18B20
   sensors.begin();
   Serial.println("DS18B20 Initialized.");
-
   getDeviceMAC();
-
   pathBase = "/sensor_data/" + deviceMAC + "/";
   pathManualAlertOn  = pathBase + "manual_alert_on";
   pathManualAlertOff = pathBase + "manual_alert_off";
@@ -490,12 +484,10 @@ void setup() {
   pathManualClearOff = pathBase + "manual_clear_off";
   
   getSensorThreshold();
-
   checkPowerStatus();
   connectNetwork();
   Serial.println("--- Setup Complete ---");
 }
-
 void loop() {
   checkPowerStatus();
   readEnvironment();
@@ -513,6 +505,5 @@ void loop() {
   deactivateAlertSiren();
   activateClearSiren();
   deactivateClearSiren();
-
   uploadData();
 }
