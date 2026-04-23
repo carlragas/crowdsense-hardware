@@ -450,6 +450,36 @@ void uploadData(){
     }
   }
 }
+void recoverPreviousCounts() {
+  Serial.println("Attempting to recover previous ToF counts from Firebase...");
+  if (Firebase.ready()) {
+    // Read people_inside
+    if (Firebase.RTDB.getInt(&fbdo, (pathBase + "people_inside").c_str())) {
+      if (fbdo.dataType() == "int") totalInside = fbdo.intData();
+    }
+    // Read total_entries
+    if (Firebase.RTDB.getInt(&fbdo, (pathBase + "total_entries").c_str())) {
+      if (fbdo.dataType() == "int") totalEntries = fbdo.intData();
+    }
+    // Read total_exits
+    if (Firebase.RTDB.getInt(&fbdo, (pathBase + "total_exits").c_str())) {
+      if (fbdo.dataType() == "int") totalExits = fbdo.intData();
+    }
+    
+    Serial.println("Recovered ToF Data:");
+    Serial.print("Inside: "); Serial.print(totalInside);
+    Serial.print(" | Entries: "); Serial.print(totalEntries);
+    Serial.print(" | Exits: "); Serial.println(totalExits);
+    
+    // Also update our tracking variables so it doesn't instantly think there was a change
+    lastTotalInside = totalInside;
+    lastTotalEntries = totalEntries;
+    lastTotalExits = totalExits;
+    
+  } else {
+    Serial.println("Failed to recover counts. Starting at 0.");
+  }
+}
 void setup() {
   Serial.begin(115200);
   delay(1000); 
@@ -484,8 +514,12 @@ void setup() {
   pathManualClearOff = pathBase + "manual_clear_off";
   
   getSensorThreshold();
+
   checkPowerStatus();
   connectNetwork();
+
+  recoverPreviousCounts();
+
   Serial.println("--- Setup Complete ---");
 }
 void loop() {
