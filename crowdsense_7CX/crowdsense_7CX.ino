@@ -40,6 +40,11 @@ const unsigned long FIREBASE_SEND_INTERVAL = 900000; // Interval for sending dat
 unsigned long lastFirebaseSendTime = 0;
 bool firebaseConnected = false;
 String deviceMAC = "00:00:00:00:00:00";
+// Path Base
+String pathManualAlertOn;
+String pathManualAlertOff;
+String pathManualClearOn;
+String pathManualClearOff;
 String pathBase;
 //ToF Variables
 bool tofSuccess = false;
@@ -67,6 +72,10 @@ unsigned long lastEnvReadTime = 0;
 bool emergencyMode = false;
 bool sirenAlertActive = false;
 bool sirenClearActive = false;
+bool mAlertOn = false;
+bool mAlertOff = false;
+bool mClearOn = false;
+bool mClearOff = false;
 unsigned long sirenAlertDuration = 0;
 unsigned long sirenClearDuration = 0;
 String pathAlertOn, pathAlertOff;
@@ -311,149 +320,107 @@ void getSensorThreshold(){
   }
 }
 
-bool manualTrigger(int caller){
-  if (Firebase.ready()){
-    String manualAlertOnPath = "/sensor_data" + deviceMAC + "/manual_alert_on";
-    String manualAlertOffPath = "/sensor_data" + deviceMAC + "/manual_alert_off";
-    String manualClearOnPath = "/sensor_data" + deviceMAC + "/manual_clear_on";
-    String manualClearOffPath = "/sensor_data" + deviceMAC + "/manual_clear_off";
-    switch(caller){
-      case 1:
-        if (!sirenAlertActive){
-          if (Firebase.RTDB.getBool(&fbdo, manualAlertOnPath.c_str())) {
-            return fbdo.boolData();
-          }
-        } else if (sirenAlertActive){
-          if (Firebase.RTDB.getBool(&fbdo, manualAlertOffPath.c_str())){
-            return fbdo.boolData();
-          }
-        }
-        if ((!Firebase.RTDB.getBool(&fbdo, manualAlertOnPath.c_str())) || (Firebase.RTDB.getBool(&fbdo, manualAlertOffPath.c_str()))){
-          return false;
-          Serial.println("ERROR: Unable to retrieve manual alert status.");
-        }
-        break;
-
-      case 2:
-        if (!sirenClearActive){
-          
-          if (Firebase.RTDB.getBool(&fbdo, manualClearOnPath.c_str())) {
-            return fbdo.boolData();
-          }
-        }
-        else if (sirenClearActive){
-          
-          if (Firebase.RTDB.getBool(&fbdo, manualClearOffPath.c_str())) {
-            return fbdo.boolData();
-          }
-        }
-        if ((!Firebase.RTDB.getBool(&fbdo, manualClearOnPath.c_str())) || (Firebase.RTDB.getBool(&fbdo, manualClearOffPath.c_str()))){
-          return false;
-          Serial.println("ERROR: Unable to retrieve manual alert status.");
-        }
-        break;
-
-      default:
-        return false;
-        Serial.println("ERROR: Unknown Caller.");
+// This replaces manualTrigger!
+bool getFirebaseState(String path) {
+  if (Firebase.ready()) {
+    if (Firebase.RTDB.getBool(&fbdo, path.c_str())) {
+      return fbdo.boolData();
+    } else {
+      // Print the error BEFORE returning false!
+      Serial.println("Firebase Read Error on path: " + path);
     }
+  }
+  return false;
+}
+
+void resetManualTrigger(String path) {
+  if (Firebase.ready()) {
+    // We use a non-blocking "async" approach or a simple setBool
+    // This tells Firebase: "Command received, you can reset the button now."
+    Firebase.RTDB.setBool(&fbdo, path.c_str(), false);
   }
 }
 
-void activateAlertSiren(){
-  if (!sirenAlertActive && !emergencyMode){
-    bool isFireDetected = (!currentMainFlameValue || currentBackupFlameValue <= 1000) && (currentGasValue >= 600);
-    bool manualAlert = false;
-    if (firebaseConnected && (millis() - lastManualCheckTime >= ManualCheckInterval)){
-      lastManualCheckTime = millis();
-      manualAlert = manualTrigger(1);
-    }
-    if (isFireDetected){
-      sirenAlertActive =  true;
+void activateAlertSiren() {
+  if (!sirenAlertActive && !emergencyMode) {
+    bool isFireDetected = (!currentMainFlameValue || currentBackupFlameValue <= flameThreshold) && (currentGasValue >= gasThreshold);
+
+    if (isFireDetected || mAlertOn) {
+      sirenAlertActive = true;
       emergencyMode = true;
-      digitalWrite(SIREN_2,HIGH);
+      digitalWrite(SIREN_2, HIGH);
       sirenAlertDuration = millis() + 180000;
-      Serial.println("FIRE DETECTED: Emergency mode enabled. Siren Activated.");
-    }
-    else if (manualAlert){
-      manualAlert = false;
-      sirenAlertActive =  true;
-      emergencyMode = true;
-      digitalWrite(SIREN_2,HIGH);
-      sirenAlertDuration = millis() + 180000;
-      Serial.println("MANUAL OVERRIDE: Emergency mode enabled. Siren Activated.");
-    }
-  }
-}
 
-void deactivateAlertSiren(){
-  if (sirenAlertActive &&  emergencyMode){
-    bool manualAlert = false;
-    if (firebaseConnected && (millis() - lastManualCheckTime >= ManualCheckInterval)){
-      lastManualCheckTime = millis();
-      manualAlert = manualTrigger(1);
-    }
-    if (millis() >= sirenAlertDuration){
-      sirenAlertDuration = 0;
-      sirenAlertActive = false;
-      digitalWrite(SIREN_2, LOW);
-      Serial.println("SIREN TIMEOUT! Alert siren deactivated. Emergency mode still enabled.");
-    }
-    else if (manualAlert) {
-      sirenAlertDuration = 0;
-      sirenAlertActive = false;
-      emergencyMode = false;
-      digitalWrite(SIREN_2, LOW);
-      Serial.println("MANUAL OVERRIDE! Alert siren deactivated. Emergency mode disabled.");
-    }
-  }
-}
-
-void activateClearSiren(){
-  if (!sirenClearActive && emergencyMode){
-    bool clearStatus = totalInside == 0; 
-    bool manualClear = false;
-    if (firebaseConnected && (millis() - lastManualCheckTime >= ManualCheckInterval)){
-      lastManualCheckTime = millis();
-      manualClear = manualTrigger(2);
-    }
-
-    if (clearStatus){
-      sirenClearActive = true;
-      digitalWrite(SIREN_1, HIGH);
-      sirenClearDuration = millis() + 60000;
-      emergencyMode = false;
-      Serial.println("AREA CLEAR: All personnel had successfully evacuated the area.");
-    }
-
-    if (manualClear){
-        sirenClearActive = true;
-        digitalWrite(SIREN_1, HIGH);
-        sirenClearDuration = millis() + 60000;
-        emergencyMode = false;
-        Serial.println("MANUAL OVERRIDE: All personnel had successfully evacuated the area.");
+      if (mAlertOn) {
+        Serial.println("MANUAL OVERRIDE: Alert Siren Activated. Resetting DB flag...");
+        resetManualTrigger(pathManualAlertOn); // <--- Resetting the DB
+        mAlertOn = false; // Reset local variable so we don't double-trigger
+      } else {
+        Serial.println("FIRE DETECTED: Emergency mode enabled.");
       }
+    }
   }
 }
 
-void deactivateClearSiren(){
-  if (sirenClearActive){
-    bool manualClear = false;
-    if (firebaseConnected && (millis() - lastManualCheckTime >= ManualCheckInterval)){
-      lastManualCheckTime = millis();
-      manualClear = manualTrigger(2);
+void deactivateAlertSiren() {
+  if (sirenAlertActive) {
+    // Timeout logic
+    if (millis() >= sirenAlertDuration) {
+      sirenAlertActive = false;
+      digitalWrite(SIREN_2, LOW);
+      Serial.println("SIREN TIMEOUT: Alert siren deactivated.");
+    } 
+    // Manual OFF logic
+    else if (mAlertOff) {
+      sirenAlertActive = false;
+      emergencyMode = false; 
+      digitalWrite(SIREN_2, LOW);
+      
+      Serial.println("MANUAL OVERRIDE: Siren OFF. Resetting DB flag...");
+      resetManualTrigger(pathManualAlertOff); // <--- Resetting the DB
+      mAlertOff = false;
     }
+  }
+}
 
+void activateClearSiren() {
+  if (!sirenClearActive && emergencyMode) {
+    bool clearStatus = (totalInside == 0);
+
+    if (clearStatus || mClearOn) {
+      sirenClearActive = true;
+      emergencyMode = false; 
+      digitalWrite(SIREN_1, HIGH);
+      sirenClearDuration = millis() + 180000; 
+
+      if (mClearOn) {
+        Serial.println("MANUAL CLEAR: Siren Activated. Resetting DB flag...");
+        resetManualTrigger(pathManualClearOn); // <--- Resetting the DB
+        mClearOn = false;
+      } else {
+        Serial.println("AREA CLEAR: Personnel evacuated.");
+      }
+    }
+  }
+}
+
+void deactivateClearSiren() {
+  if (sirenClearActive) {
+    // Timeout
     if (millis() >= sirenClearDuration) {
       sirenClearActive = false;
       digitalWrite(SIREN_1, LOW);
       Serial.println("SIREN TIMEOUT: Clear siren deactivated.");
     }
-
-    if(manualClear){
+    // Manual OFF
+    else if (mClearOff) {
       sirenClearActive = false;
+      emergencyMode = false;
       digitalWrite(SIREN_1, LOW);
-      Serial.println("MANUAL OVERRIDE: Clear siren deactivated.");
+      
+      Serial.println("MANUAL CLEAR OFF: Resetting DB flag...");
+      resetManualTrigger(pathManualClearOff); // <--- Resetting the DB
+      mClearOff = false;
     }
   }
 }
@@ -462,16 +429,12 @@ void uploadData(){
   if (firebaseConnected && (millis() - lastFirebaseSendTime >= FIREBASE_SEND_INTERVAL)) {
     lastFirebaseSendTime = millis();
     
-    // CRITICAL: Update the NTP client to get the latest time from the internet
     timeClient.update();
     unsigned long epochTime = timeClient.getEpochTime();
 
-    // Only upload if we have a valid year (Epoch > 1,000,000 means we are past 1970)
     if (Firebase.ready() && epochTime > 1000000) {
-      // FIX: Use double. It can safely hold the massive 13-digit millisecond number.
       double currentEpochMillis = (double)epochTime * 1000.0;
 
-      // Send Data
       Firebase.RTDB.setFloat(&fbdo, (pathBase + "temperature").c_str(), currentTempC);
       Firebase.RTDB.setInt(&fbdo, (pathBase + "gas").c_str(), currentGasValue);
       Firebase.RTDB.setInt(&fbdo, (pathBase + "flame").c_str(), currentBackupFlameValue);
@@ -481,14 +444,12 @@ void uploadData(){
       Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_alert_active").c_str(), sirenAlertActive);
       Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_clear_active").c_str(), sirenClearActive);
       Firebase.RTDB.setString(&fbdo, (pathBase + "power_status").c_str(), powerStatus);
-      
-      // FIX: Use setDouble instead of setLongLong
       Firebase.RTDB.setDouble(&fbdo, (pathBase + "last_updated").c_str(), currentEpochMillis);
   
-      Serial.println("--- Firebase data update complete (Synced with NTP) ---");
+      Serial.println("--- Firebase data update complete ---");
       
     } else if (epochTime <= 1000000) {
-      Serial.println("Waiting for NTP sync... skipping Firebase upload to avoid 1970 error.");
+      Serial.println("Waiting for NTP sync...");
     }
   }
 }
@@ -521,7 +482,14 @@ void setup() {
   Serial.println("DS18B20 Initialized.");
 
   getDeviceMAC();
+
   pathBase = "/sensor_data/" + deviceMAC + "/";
+  pathManualAlertOn  = pathBase + "manual_alert_on";
+  pathManualAlertOff = pathBase + "manual_alert_off";
+  pathManualClearOn  = pathBase + "manual_clear_on";
+  pathManualClearOff = pathBase + "manual_clear_off";
+  
+  getSensorThreshold();
 
   checkPowerStatus();
   connectNetwork();
@@ -532,9 +500,19 @@ void loop() {
   checkPowerStatus();
   readEnvironment();
   countCrowd();
+  if (firebaseConnected && (millis() - lastManualCheckTime >= ManualCheckInterval)) {
+    lastManualCheckTime = millis();
+    // Assuming you have functions or direct paths to check these 4 states:
+    mAlertOn = getFirebaseState("manual_alert_on");
+    mAlertOff = getFirebaseState("manual_alert_off");
+    mClearOn = getFirebaseState("manual_clear_on");
+    mClearOff = getFirebaseState("manual_clear_off");
+  }
+  
   activateAlertSiren();
   deactivateAlertSiren();
   activateClearSiren();
   deactivateClearSiren();
+
   uploadData();
 }
