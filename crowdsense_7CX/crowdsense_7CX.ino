@@ -76,8 +76,7 @@ bool mClearOff = false;
 unsigned long sirenAlertDuration = 0;
 unsigned long sirenClearDuration = 0;
 String pathAlertOn, pathAlertOff;
-// Manual trigger check interval — fast polling (2s) for near-instant siren response
-const unsigned long ManualCheckInterval = 2000;
+const unsigned long ManualCheckInterval = 60000;
 unsigned long lastManualCheckTime = 0;
 // Power Variables - Voltage Divider
 const unsigned long checkPowerInterval = 5000;
@@ -346,7 +345,7 @@ void resetManualTrigger(String path) {
 }
 
 void activateAlertSiren() {
-  if (!sirenAlertActive) {
+  if (!sirenAlertActive && !emergencyMode) {
     bool isFireDetected = (!currentMainFlameValue || currentBackupFlameValue <= flameThreshold) && (currentGasValue >= gasThreshold);
 
     if (isFireDetected || mAlertOn) {
@@ -357,8 +356,8 @@ void activateAlertSiren() {
 
       if (mAlertOn) {
         Serial.println("MANUAL OVERRIDE: Alert Siren Activated. Resetting DB flag...");
-        resetManualTrigger(pathManualAlertOn);
-        mAlertOn = false;
+        resetManualTrigger(pathManualAlertOn); // <--- Resetting the DB
+        mAlertOn = false; // Reset local variable so we don't double-trigger
       } else {
         Serial.println("FIRE DETECTED: Emergency mode enabled.");
       }
@@ -371,7 +370,6 @@ void deactivateAlertSiren() {
     // Timeout logic
     if (millis() >= sirenAlertDuration) {
       sirenAlertActive = false;
-      emergencyMode = false;
       digitalWrite(SIREN_2, LOW);
       Serial.println("SIREN TIMEOUT: Alert siren deactivated.");
     } 
@@ -382,26 +380,25 @@ void deactivateAlertSiren() {
       digitalWrite(SIREN_2, LOW);
       
       Serial.println("MANUAL OVERRIDE: Siren OFF. Resetting DB flag...");
-      resetManualTrigger(pathManualAlertOff);
+      resetManualTrigger(pathManualAlertOff); // <--- Resetting the DB
       mAlertOff = false;
     }
   }
 }
 
 void activateClearSiren() {
-  // Safety Alert can now be triggered independently — no emergencyMode required
-  if (!sirenClearActive) {
-    bool clearStatus = (totalInside == 0) && emergencyMode;
+  if (!sirenClearActive && emergencyMode) {
+    bool clearStatus = (totalInside == 0);
 
     if (clearStatus || mClearOn) {
       sirenClearActive = true;
-      if (emergencyMode) emergencyMode = false; // End emergency if it was active
+      emergencyMode = false; 
       digitalWrite(SIREN_1, HIGH);
       sirenClearDuration = millis() + 180000; 
 
       if (mClearOn) {
-        Serial.println("MANUAL CLEAR: Safety Alert Activated. Resetting DB flag...");
-        resetManualTrigger(pathManualClearOn);
+        Serial.println("MANUAL CLEAR: Siren Activated. Resetting DB flag...");
+        resetManualTrigger(pathManualClearOn); // <--- Resetting the DB
         mClearOn = false;
       } else {
         Serial.println("AREA CLEAR: Personnel evacuated.");
@@ -425,20 +422,9 @@ void deactivateClearSiren() {
       digitalWrite(SIREN_1, LOW);
       
       Serial.println("MANUAL CLEAR OFF: Resetting DB flag...");
-      resetManualTrigger(pathManualClearOff);
+      resetManualTrigger(pathManualClearOff); // <--- Resetting the DB
       mClearOff = false;
     }
-  }
-}
-
-void checkManualTriggers() {
-  if (firebaseConnected && (millis() - lastManualCheckTime >= ManualCheckInterval)) {
-    lastManualCheckTime = millis();
-    
-    mAlertOn  = getFirebaseState(pathManualAlertOn);
-    mAlertOff = getFirebaseState(pathManualAlertOff);
-    mClearOn  = getFirebaseState(pathManualClearOn);
-    mClearOff = getFirebaseState(pathManualClearOff);
   }
 }
 
@@ -516,9 +502,15 @@ void loop() {
   checkPowerStatus();
   readEnvironment();
   countCrowd();
-
-  // Check manual siren triggers from the app (every 2 seconds for near-instant response)
-  checkManualTriggers();
+if (firebaseConnected && (millis() - lastManualCheckTime >= ManualCheckInterval)) {
+    lastManualCheckTime = millis();
+    
+    // Pass the variables WITHOUT quotation marks!
+    mAlertOn = getFirebaseState(pathManualAlertOn);
+    mAlertOff = getFirebaseState(pathManualAlertOff);
+    mClearOn = getFirebaseState(pathManualClearOn);
+    mClearOff = getFirebaseState(pathManualClearOff);
+  }
   
   activateAlertSiren();
   deactivateAlertSiren();
