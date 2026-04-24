@@ -9,7 +9,6 @@
 #include <WiFiUdp.h>
 #include <Firebase_ESP_Client.h>
 #include <addons/TokenHelper.h>
-
 // Pin Configurations
 #define ONE_WIRE_BUS 4
 #define BACKUP_FLAME_DIGITAL 5
@@ -24,7 +23,6 @@
 #define GAS 35
 #define FIREBASE_HOST "https://crowdsense-db-default-rtdb.asia-southeast1.firebasedatabase.app/"
 #define FIREBASE_LEGACY_TOKEN "5mGeiwSA9PLndbFmJZtC8x7a9U78VaM0H21nh1nd"
-
 //Initializations
 VL53L7CX sensor(&Wire, -1, -1); // The library expects (Wire, LPN_PIN, RST_PIN). Using -1 for unused reset pins.
 OneWire oneWire(ONE_WIRE_BUS);
@@ -34,7 +32,6 @@ FirebaseAuth auth;
 FirebaseConfig config;
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org");
-
 //Database Variables
 const unsigned long FIREBASE_SEND_INTERVAL = 900000; // Interval for sending data in the database
 unsigned long lastFirebaseSendTime = 0;
@@ -146,6 +143,7 @@ void connectDB(){
       Serial.println("Firebase connection failed!");
       firebaseConnected = false;
     }
+    getSensorThreshold();
 }
 
 void checkPowerStatus(){
@@ -283,33 +281,31 @@ void countCrowd(){
   }
 }
 
-void getSensorThreshold(){
-  if (Firebase.ready()){
-    if (Firebase.RTDB.getFloat(&fbdo, (pathBase + "temperature_threshold").c_str())){
-       if (fbdo.dataType() == "float"){
-        tempThreshold = fbdo.floatData();
-       } else if (fbdo.dataType() == "null"){
-        Serial.println("Temperature threshold path not found. Assigning default threshold values.");
-        tempThreshold = 57.0;
-       }
+void getSensorThreshold() {
+  if (Firebase.ready()) {
+    
+    // TEMPERATURE
+    if (Firebase.RTDB.getFloat(&fbdo, (pathBase + "temperature_threshold").c_str())) {
+       tempThreshold = fbdo.floatData();
+    } else {
+       Serial.println("Temp threshold missing/error. Using default. Error: " + fbdo.errorReason());
+       tempThreshold = 57.0;
     }
 
-    if (Firebase.RTDB.getInt(&fbdo, (pathBase + "smoke_threshold").c_str())){
-       if (fbdo.dataType() == "int"){
-        gasThreshold = fbdo.intData();
-       } else if (fbdo.dataType() == "null"){
-        Serial.println("Gas threshold path not found. Assigning default threshold values.");
-        gasThreshold = 500;
-       }
+    // GAS / SMOKE
+    if (Firebase.RTDB.getInt(&fbdo, (pathBase + "smoke_threshold").c_str())) {
+       gasThreshold = fbdo.intData();
+    } else {
+       Serial.println("Gas threshold missing/error. Using default. Error: " + fbdo.errorReason());
+       gasThreshold = 500;
     }
 
-    if (Firebase.RTDB.getInt(&fbdo, (pathBase + "flame_threshold").c_str())){
-       if (fbdo.dataType() == "int"){
-        flameThreshold = fbdo.intData();
-       } else if (fbdo.dataType() == "null"){
-        Serial.println("Flame threshold path not found. Assigning default threshold values.");
-        flameThreshold = 2000;
-       }
+    // FLAME
+    if (Firebase.RTDB.getInt(&fbdo, (pathBase + "flame_threshold").c_str())) {
+       flameThreshold = fbdo.intData();
+    } else {
+       Serial.println("Flame threshold missing/error. Using default. Error: " + fbdo.errorReason());
+       flameThreshold = 2000;
     }
   
   } else {
@@ -318,6 +314,13 @@ void getSensorThreshold(){
     flameThreshold = 2000;
     gasThreshold = 500;
   }
+  
+  Serial.print("Temperature Threshold: ");
+  Serial.println(tempThreshold);
+  Serial.print("Flame Threshold: ");
+  Serial.println(flameThreshold);
+  Serial.print("Gas Threshold: ");
+  Serial.println(gasThreshold);
 }
 
 // This replaces manualTrigger!
@@ -443,6 +446,7 @@ void uploadData(){
       Firebase.RTDB.setInt(&fbdo, (pathBase + "total_exits").c_str(), totalExits);
       Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_alert_active").c_str(), sirenAlertActive);
       Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_clear_active").c_str(), sirenClearActive);
+      Firebase.RTDB.setBool(&fbdo, (pathBase + "emergency_mode").c_str(), emergencyMode);
       Firebase.RTDB.setString(&fbdo, (pathBase + "power_status").c_str(), powerStatus);
       Firebase.RTDB.setDouble(&fbdo, (pathBase + "last_updated").c_str(), currentEpochMillis);
   
@@ -488,8 +492,6 @@ void setup() {
   pathManualAlertOff = pathBase + "manual_alert_off";
   pathManualClearOn  = pathBase + "manual_clear_on";
   pathManualClearOff = pathBase + "manual_clear_off";
-  
-  getSensorThreshold();
 
   checkPowerStatus();
   connectNetwork();
@@ -500,13 +502,14 @@ void loop() {
   checkPowerStatus();
   readEnvironment();
   countCrowd();
-  if (firebaseConnected && (millis() - lastManualCheckTime >= ManualCheckInterval)) {
+if (firebaseConnected && (millis() - lastManualCheckTime >= ManualCheckInterval)) {
     lastManualCheckTime = millis();
-    // Assuming you have functions or direct paths to check these 4 states:
-    mAlertOn = getFirebaseState("manual_alert_on");
-    mAlertOff = getFirebaseState("manual_alert_off");
-    mClearOn = getFirebaseState("manual_clear_on");
-    mClearOff = getFirebaseState("manual_clear_off");
+    
+    // Pass the variables WITHOUT quotation marks!
+    mAlertOn = getFirebaseState(pathManualAlertOn);
+    mAlertOff = getFirebaseState(pathManualAlertOff);
+    mClearOn = getFirebaseState(pathManualClearOn);
+    mClearOff = getFirebaseState(pathManualClearOff);
   }
   
   activateAlertSiren();
