@@ -436,7 +436,8 @@ void uploadData(){
 
       Firebase.RTDB.setFloat(&fbdo, (pathBase + "temperature").c_str(), currentTempC);
       Firebase.RTDB.setInt(&fbdo, (pathBase + "gas").c_str(), currentGasValue);
-      Firebase.RTDB.setInt(&fbdo, (pathBase + "flame").c_str(), currentBackupFlameValue);
+      Firebase.RTDB.setBool(&fbdo, (pathBase + "main_flame").c_str(), currentMainFlameValue);
+      Firebase.RTDB.setInt(&fbdo, (pathBase + "backup_flame").c_str(), currentBackupFlameValue);
       Firebase.RTDB.setInt(&fbdo, (pathBase + "people_inside").c_str(), totalInside);
       Firebase.RTDB.setInt(&fbdo, (pathBase + "total_entries").c_str(), totalEntries);
       Firebase.RTDB.setInt(&fbdo, (pathBase + "total_exits").c_str(), totalExits);
