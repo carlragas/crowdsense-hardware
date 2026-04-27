@@ -514,8 +514,8 @@ void setup() {
   Wire.setClock(400000); 
   pinConfig();
   // Start sirens LOW to avoid current-spike brownouts on PCB power-up
-  digitalWrite(SIREN_1, LOW);
-  digitalWrite(SIREN_2, LOW);
+  digitalWrite(SIREN_1, HIGH);
+  digitalWrite(SIREN_2, HIGH);
   // Initialize VL53L7CX 
   sensor.begin(); // Setup I2C interface
   if (sensor.init_sensor() != 0) {
