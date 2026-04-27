@@ -65,7 +65,6 @@ int gasThreshold;
 bool esp32Online = true;
 unsigned long lastEnvReadTime = 0; 
 // Siren Variables
-bool emergencyMode = false;
 bool sirenAlertActive = false;
 bool sirenClearActive = false;
 bool autoTriggered = false; // true = fire-auto-detected, false = app-triggered (skip auto-transition)
@@ -360,7 +359,6 @@ void checkAppCommands() {
         // App turned ON evacuation siren
         autoTriggered = false; // App controls lifecycle — skip auto-transition
         sirenAlertActive = true;
-        emergencyMode = true;
         digitalWrite(SIREN_2, HIGH);
         sirenAlertDuration = millis() + 180000;
         Serial.println("APP COMMAND: Evacuation Siren ACTIVATED.");
@@ -368,7 +366,6 @@ void checkAppCommands() {
         // App turned OFF evacuation siren
         autoTriggered = false;
         sirenAlertActive = false;
-        emergencyMode = false;
         digitalWrite(SIREN_2, LOW);
         Serial.println("APP COMMAND: Evacuation Siren DEACTIVATED.");
       }
@@ -378,10 +375,9 @@ void checkAppCommands() {
     if (Firebase.RTDB.getBool(&fbdo, (pathBase + "siren_clear_active").c_str())) {
       bool appCommand = fbdo.boolData();
       if (appCommand && !sirenClearActive) {
-        // App turned ON safety alert — no emergencyMode required
+        // App turned ON safety alert
         autoTriggered = false; // App controls lifecycle — skip auto-transition
         sirenClearActive = true;
-        if (emergencyMode) emergencyMode = false;
         digitalWrite(SIREN_1, HIGH);
         sirenClearDuration = millis() + 180000;
         Serial.println("APP COMMAND: Safety Alert ACTIVATED.");
@@ -408,7 +404,6 @@ void autoTriggerSirens() {
   if (!sirenAlertActive && !sirenClearActive && isFireDetected) {
     autoTriggered = true; // Mark as sensor-auto-detected (enables auto-transition)
     sirenAlertActive = true;
-    emergencyMode = true;
     digitalWrite(SIREN_2, HIGH);
     sirenAlertDuration = millis() + 180000;
     Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_alert_active").c_str(), true);
@@ -420,7 +415,7 @@ void autoTriggerSirens() {
   // App-triggered sirens are fully controlled by the app — no auto-transition.
   //   (a) All people have evacuated (totalInside == 0), OR
   //   (b) Fire is no longer detected (sensors cleared)
-  if (autoTriggered && emergencyMode && sirenAlertActive && !sirenClearActive) {
+  if (autoTriggered && sirenAlertActive && !sirenClearActive) {
     bool peopleClear = (totalInside == 0);
     bool fireClear = !isFireDetected;
 
@@ -432,7 +427,6 @@ void autoTriggerSirens() {
 
       // 2. Turn ON safety alert
       sirenClearActive = true;
-      emergencyMode = false;
       digitalWrite(SIREN_1, HIGH);
       sirenClearDuration = millis() + 180000;
       Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_clear_active").c_str(), true);
@@ -450,7 +444,6 @@ void autoTriggerSirens() {
   // --- Siren Timeouts ---
   if (sirenAlertActive && millis() >= sirenAlertDuration) {
     sirenAlertActive = false;
-    emergencyMode = false;
     digitalWrite(SIREN_2, LOW);
     Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_alert_active").c_str(), false);
     Serial.println("SIREN TIMEOUT: Evacuation siren deactivated.");
@@ -500,7 +493,7 @@ void uploadData(){
       Firebase.RTDB.setInt(&fbdo, (pathBase + "total_exits").c_str(), totalExits);
       Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_alert_active").c_str(), sirenAlertActive);
       Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_clear_active").c_str(), sirenClearActive);
-      Firebase.RTDB.setBool(&fbdo, (pathBase + "emergency_mode").c_str(), emergencyMode);
+
       Firebase.RTDB.setString(&fbdo, (pathBase + "power_status").c_str(), powerStatus);
       Firebase.RTDB.setDouble(&fbdo, (pathBase + "last_updated").c_str(), currentEpochMillis);
   
