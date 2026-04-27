@@ -317,7 +317,7 @@ void getSensorThreshold() {
     }
 
     // FLAME
-    if (Firebase.RTDB.getInt(&fbdo, (pathBase + "flame_threshold").c_str())) {
+    if (Firebase.RTDB.getInt(&fbdo, ( + "flame_threshold").c_str())) {
        flameThreshold = fbdo.intData();
     } else {
        Serial.println("Flame threshold missing/error. Using default. Error: " + fbdo.errorReason());
