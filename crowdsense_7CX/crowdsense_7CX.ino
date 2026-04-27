@@ -307,14 +307,6 @@ void countCrowd(){
 
 void getSensorThreshold() {
   if (Firebase.ready()) {
-    
-    // TEMPERATURE
-    if (Firebase.RTDB.getFloat(&fbdo, (pathBase + "temperature_threshold").c_str())) {
-       tempThreshold = fbdo.floatData();
-    } else {
-       Serial.println("Temp threshold missing/error. Using default. Error: " + fbdo.errorReason());
-       tempThreshold = 57.0;
-    }
 
     // GAS / SMOKE
     if (Firebase.RTDB.getInt(&fbdo, (pathBase + "smoke_threshold").c_str())) {
