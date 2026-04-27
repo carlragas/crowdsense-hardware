@@ -68,6 +68,7 @@ unsigned long lastEnvReadTime = 0;
 bool emergencyMode = false;
 bool sirenAlertActive = false;
 bool sirenClearActive = false;
+bool autoTriggered = false; // true = fire-auto-detected, false = app-triggered (skip auto-transition)
 unsigned long sirenAlertDuration = 0;
 unsigned long sirenClearDuration = 0;
 // Manual trigger check interval — 2s for near-instant siren response from app
@@ -140,6 +141,11 @@ void connectDB(){
   if (Firebase.ready()) {
     firebaseConnected = true;
     Serial.println("Firebase connected successfully!");
+    // Clean boot: Force both sirens OFF in database so the firmware
+    // doesn't read stale 'true' values from a previous session.
+    Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_alert_active").c_str(), false);
+    Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_clear_active").c_str(), false);
+    Serial.println("Sirens reset to OFF in database.");
     } else {
       Serial.println("Firebase connection failed!");
       firebaseConnected = false;
@@ -317,7 +323,7 @@ void getSensorThreshold() {
     }
 
     // FLAME
-    if (Firebase.RTDB.getInt(&fbdo, ( + "flame_threshold").c_str())) {
+    if (Firebase.RTDB.getInt(&fbdo, (pathBase + "flame_threshold").c_str())) {
        flameThreshold = fbdo.intData();
     } else {
        Serial.println("Flame threshold missing/error. Using default. Error: " + fbdo.errorReason());
@@ -352,6 +358,7 @@ void checkAppCommands() {
       bool appCommand = fbdo.boolData();
       if (appCommand && !sirenAlertActive) {
         // App turned ON evacuation siren
+        autoTriggered = false; // App controls lifecycle — skip auto-transition
         sirenAlertActive = true;
         emergencyMode = true;
         digitalWrite(SIREN_2, HIGH);
@@ -359,6 +366,7 @@ void checkAppCommands() {
         Serial.println("APP COMMAND: Evacuation Siren ACTIVATED.");
       } else if (!appCommand && sirenAlertActive) {
         // App turned OFF evacuation siren
+        autoTriggered = false;
         sirenAlertActive = false;
         emergencyMode = false;
         digitalWrite(SIREN_2, LOW);
@@ -371,6 +379,7 @@ void checkAppCommands() {
       bool appCommand = fbdo.boolData();
       if (appCommand && !sirenClearActive) {
         // App turned ON safety alert — no emergencyMode required
+        autoTriggered = false; // App controls lifecycle — skip auto-transition
         sirenClearActive = true;
         if (emergencyMode) emergencyMode = false;
         digitalWrite(SIREN_1, HIGH);
@@ -378,6 +387,7 @@ void checkAppCommands() {
         Serial.println("APP COMMAND: Safety Alert ACTIVATED.");
       } else if (!appCommand && sirenClearActive) {
         // App turned OFF safety alert
+        autoTriggered = false;
         sirenClearActive = false;
         digitalWrite(SIREN_1, LOW);
         Serial.println("APP COMMAND: Safety Alert DEACTIVATED.");
@@ -396,6 +406,7 @@ void autoTriggerSirens() {
   // Only trigger if no evacuation is running AND no safety alert is running.
   // The !sirenClearActive guard prevents re-triggering during the same incident.
   if (!sirenAlertActive && !sirenClearActive && isFireDetected) {
+    autoTriggered = true; // Mark as sensor-auto-detected (enables auto-transition)
     sirenAlertActive = true;
     emergencyMode = true;
     digitalWrite(SIREN_2, HIGH);
@@ -405,10 +416,11 @@ void autoTriggerSirens() {
   }
 
   // --- Auto Safety Alert (transition from evacuation) ---
-  // During an active evacuation, switch to safety alert if:
+  // Only transitions when the evacuation was AUTO-TRIGGERED by fire sensors.
+  // App-triggered sirens are fully controlled by the app — no auto-transition.
   //   (a) All people have evacuated (totalInside == 0), OR
   //   (b) Fire is no longer detected (sensors cleared)
-  if (emergencyMode && sirenAlertActive && !sirenClearActive) {
+  if (autoTriggered && emergencyMode && sirenAlertActive && !sirenClearActive) {
     bool peopleClear = (totalInside == 0);
     bool fireClear = !isFireDetected;
 
