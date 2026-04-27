@@ -359,14 +359,14 @@ void checkAppCommands() {
         // App turned ON evacuation siren
         autoTriggered = false; // App controls lifecycle — skip auto-transition
         sirenAlertActive = true;
-        digitalWrite(SIREN_2, HIGH);
+        digitalWrite(SIREN_2, LOW);
         sirenAlertDuration = millis() + 180000;
         Serial.println("APP COMMAND: Evacuation Siren ACTIVATED.");
       } else if (!appCommand && sirenAlertActive) {
         // App turned OFF evacuation siren
         autoTriggered = false;
         sirenAlertActive = false;
-        digitalWrite(SIREN_2, LOW);
+        digitalWrite(SIREN_2, HIGH);
         Serial.println("APP COMMAND: Evacuation Siren DEACTIVATED.");
       }
     }
@@ -378,14 +378,14 @@ void checkAppCommands() {
         // App turned ON safety alert
         autoTriggered = false; // App controls lifecycle — skip auto-transition
         sirenClearActive = true;
-        digitalWrite(SIREN_1, HIGH);
+        digitalWrite(SIREN_1, LOW);
         sirenClearDuration = millis() + 180000;
         Serial.println("APP COMMAND: Safety Alert ACTIVATED.");
       } else if (!appCommand && sirenClearActive) {
         // App turned OFF safety alert
         autoTriggered = false;
         sirenClearActive = false;
-        digitalWrite(SIREN_1, LOW);
+        digitalWrite(SIREN_1, HIGH);
         Serial.println("APP COMMAND: Safety Alert DEACTIVATED.");
       }
     }
