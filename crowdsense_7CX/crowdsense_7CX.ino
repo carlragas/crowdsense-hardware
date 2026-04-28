@@ -44,7 +44,7 @@ String deviceMAC = "00:00:00:00:00:00";
 String pathBase;
 //ToF Variables
 bool tofSuccess = false;
-const int PERSON_THRESHOLD_MM = 500; 
+const int PERSON_THRESHOLD_MM = 1500; // Increased from 500 to 1500mm (1.5m) to detect people at normal distances
 int totalInside = 0;
 int totalEntries = 0;
 int totalExits = 0;
@@ -235,7 +235,8 @@ void countCrowd(){
           int distance = results.distance_mm[targetIndex];
           uint8_t status = results.target_status[targetIndex];
 
-          if ((status == 5 || status == 6 || status == 9) && distance > 0 && distance < PERSON_THRESHOLD_MM) {
+          // Status 5 is 'Valid'. Status 6/9 can be used but are less certain.
+          if (status == 5 && distance > 0 && distance < PERSON_THRESHOLD_MM) {
             if (y < 2) laneA[x] = true; 
             else laneB[x] = true;       
           }
@@ -274,6 +275,10 @@ void countCrowd(){
                 totalEntries++;
                 totalInside++;
                 lastEntryTime = currentMillis;
+                
+                // LIVE UPDATE: Push to Firebase immediately so the dashboard reflects the change instantly
+                Firebase.RTDB.setInt(&fbdo, (pathBase + "people_inside").c_str(), totalInside);
+                Firebase.RTDB.setInt(&fbdo, (pathBase + "total_entries").c_str(), totalEntries);
               }
               laneState[x] = 0;
             }
@@ -296,6 +301,10 @@ void countCrowd(){
                 totalExits++;
                 totalInside--;
                 lastExitTime = currentMillis;
+
+                // LIVE UPDATE: Push to Firebase immediately
+                Firebase.RTDB.setInt(&fbdo, (pathBase + "people_inside").c_str(), totalInside);
+                Firebase.RTDB.setInt(&fbdo, (pathBase + "total_exits").c_str(), totalExits);
               }
               laneState[x] = 0;
             }
@@ -396,7 +405,11 @@ void checkAppCommands() {
 // AUTO-TRIGGER — fire detection & area-clear logic
 // ═══════════════════════════════════════════════════
 void autoTriggerSirens() {
-  bool isFireDetected = (!currentMainFlameValue || currentBackupFlameValue <= flameThreshold) && (currentGasValue >= gasThreshold);
+  // MQ Gas Sensors require a warm-up period on boot where their analog output spikes.
+  // We ignore all sensor readings for the first 30 seconds to prevent false alarms.
+  bool isWarmupPhase = millis() < 30000;
+  
+  bool isFireDetected = !isWarmupPhase && (!currentMainFlameValue || currentBackupFlameValue <= flameThreshold) && (currentGasValue >= gasThreshold);
 
   // --- Auto Fire Detection ---
   // Only trigger if no evacuation is running AND no safety alert is running.
