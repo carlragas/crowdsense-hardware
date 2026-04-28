@@ -299,7 +299,7 @@ void countCrowd(){
             if (!A && !B) {
               if (currentMillis - lastExitTime > EVENT_COOLDOWN_MS) {
                 totalExits++;
-                totalInside--;
+                if (totalInside > 0) totalInside--;  // Never go below 0
                 lastExitTime = currentMillis;
 
                 // LIVE UPDATE: Push to Firebase immediately
