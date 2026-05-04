@@ -87,9 +87,9 @@ int laneState[4] = {0, 0, 0, 0};
 unsigned long lastEntryTime[4] = {0, 0, 0, 0};
 unsigned long lastExitTime[4] = {0, 0, 0, 0};
 const int eventCooldown = 800; 
-const int CLUSTER_MERGE_MS = 500; // change name format!!!!!!!!!
+const int clusterMergeMS = 500; // change name format!!!!!!!!!
 uint8_t zoneOccupancyCount[16] = {0};
-const uint8_t MIN_FRAMES_OCCUPIED = 1; // change name format!!!!!!!!!
+const uint8_t minFramesOccupied = 1; // change name format!!!!!!!!!
 
 void pinConfig(){
   pinMode(BACKUP_FLAME_DIGITAL, INPUT);
@@ -242,7 +242,7 @@ void countCrowd(){
             zoneOccupancyCount[zone] = 0;
           }
 
-          bool confirmed = (zoneOccupancyCount[zone] >= MIN_FRAMES_OCCUPIED);
+          bool confirmed = (zoneOccupancyCount[zone] >= minFramesOccupied);
 
           if (confirmed) {
             if (y < 2) laneA[x] = true; 
@@ -286,8 +286,8 @@ void countCrowd(){
               if (currentMillis - lastEntryTime[x] > eventCooldown) {
                 // Temporal clustering: check if adjacent lane completed recently
                 bool adjacentRecent = false;
-                if (x > 0 && (currentMillis - lastEntryTime[x - 1] < CLUSTER_MERGE_MS)) adjacentRecent = true;
-                if (x < 3 && (currentMillis - lastEntryTime[x + 1] < CLUSTER_MERGE_MS)) adjacentRecent = true;
+                if (x > 0 && (currentMillis - lastEntryTime[x - 1] < clusterMergeMS)) adjacentRecent = true;
+                if (x < 3 && (currentMillis - lastEntryTime[x + 1] < clusterMergeMS)) adjacentRecent = true;
                 
                 if (!adjacentRecent) {
                   entryCompleted[x] = true;
@@ -315,8 +315,8 @@ void countCrowd(){
               if (currentMillis - lastExitTime[x] > eventCooldown) {
                 // Temporal clustering: check if adjacent lane completed recently
                 bool adjacentRecent = false;
-                if (x > 0 && (currentMillis - lastExitTime[x - 1] < CLUSTER_MERGE_MS)) adjacentRecent = true;
-                if (x < 3 && (currentMillis - lastExitTime[x + 1] < CLUSTER_MERGE_MS)) adjacentRecent = true;
+                if (x > 0 && (currentMillis - lastExitTime[x - 1] < clusterMergeMS)) adjacentRecent = true;
+                if (x < 3 && (currentMillis - lastExitTime[x + 1] < clusterMergeMS)) adjacentRecent = true;
                 
                 if (!adjacentRecent) {
                   exitCompleted[x] = true;
