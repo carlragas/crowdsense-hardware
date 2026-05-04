@@ -87,9 +87,9 @@ int laneState[4] = {0, 0, 0, 0};
 unsigned long lastEntryTime[4] = {0, 0, 0, 0};
 unsigned long lastExitTime[4] = {0, 0, 0, 0};
 const int eventCooldown = 800; 
-const int clusterMergeMS = 500; // change name format!!!!!!!!!
+const int clusterMergeMS = 500; 
 uint8_t zoneOccupancyCount[16] = {0};
-const uint8_t minFramesOccupied = 1; // change name format!!!!!!!!!
+const uint8_t minFramesOccupied = 1; 
 
 void pinConfig(){
   pinMode(BACKUP_FLAME_DIGITAL, INPUT);
@@ -143,7 +143,6 @@ void connectNetwork(){
     // WiFi and Firebase Setup
   WiFi.mode(WIFI_STA);
   WiFiManager wm;
-  wm.resetSettings();
   Serial.println("Connecting to WiFi...");
   bool res = wm.autoConnect("CrowdSense_Main_Ent", "12345678");
   if (!res) {
