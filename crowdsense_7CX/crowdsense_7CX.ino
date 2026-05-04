@@ -46,7 +46,6 @@ String pathBase;
 bool tofSuccess = false;
 const int PERSON_THRESHOLD_MM = 1500; // Increased from 500 to 1500mm (1.5m) to detect people at normal distances
 int totalInside = 0;
-int totalEntries = 0;
 int totalExits = 0;
 // ToF Variable: MULTI-LANE TRACKING: 4 separate state machines for columns 0, 1, 2, and 3
 int laneState[4] = {0, 0, 0, 0}; 
@@ -272,13 +271,11 @@ void countCrowd(){
           case 3: 
             if (!A && !B) {
               if (currentMillis - lastEntryTime > EVENT_COOLDOWN_MS) {
-                totalEntries++;
                 totalInside++;
                 lastEntryTime = currentMillis;
                 
                 // LIVE UPDATE: Push to Firebase immediately so the dashboard reflects the change instantly
                 Firebase.RTDB.setInt(&fbdo, (pathBase + "people_inside").c_str(), totalInside);
-                Firebase.RTDB.setInt(&fbdo, (pathBase + "total_entries").c_str(), totalEntries);
               }
               laneState[x] = 0;
             }
@@ -502,7 +499,6 @@ void uploadData(){
       Firebase.RTDB.setBool(&fbdo, (pathBase + "main_flame").c_str(), currentMainFlameValue);
       Firebase.RTDB.setInt(&fbdo, (pathBase + "backup_flame").c_str(), currentBackupFlameValue);
       Firebase.RTDB.setInt(&fbdo, (pathBase + "people_inside").c_str(), totalInside);
-      Firebase.RTDB.setInt(&fbdo, (pathBase + "total_entries").c_str(), totalEntries);
       Firebase.RTDB.setInt(&fbdo, (pathBase + "total_exits").c_str(), totalExits);
       Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_alert_active").c_str(), sirenAlertActive);
       Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_clear_active").c_str(), sirenClearActive);
