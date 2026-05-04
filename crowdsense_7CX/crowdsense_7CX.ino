@@ -1,5 +1,6 @@
 // Libraries
 #include <Wire.h>
+#include <time.h>
 #include <vl53l7cx_class.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
@@ -24,6 +25,7 @@
 #define GAS 35
 #define FIREBASE_HOST "https://crowdsense-db-default-rtdb.asia-southeast1.firebasedatabase.app/"
 #define FIREBASE_LEGACY_TOKEN "5mGeiwSA9PLndbFmJZtC8x7a9U78VaM0H21nh1nd"
+
 //Initializations
 VL53L7CX sensor(&Wire, -1, -1); // The library expects (Wire, LPN_PIN, RST_PIN). Using -1 for unused reset pins.
 OneWire oneWire(ONE_WIRE_BUS);
@@ -32,55 +34,62 @@ FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig config;
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org");
-//Database Variables
-const unsigned long FIREBASE_SEND_INTERVAL = 900000; // Interval for sending data in the database
-const unsigned long HEARTBEAT_INTERVAL = 20000;      // 20 secs for online status heartbeat
-unsigned long lastFirebaseSendTime = 0;
-unsigned long lastHeartbeatTime = 0;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 60000);
+
+// Time Variables
+const unsigned long firebaseSendInterval = 120000; // Interval for sending data in the database
+const unsigned long onlineStatusInterval = 20000;  // Interval for sending online status
+const unsigned long checkPowerInterval = 5000; //Interval for checking power status
+const unsigned long ManualCheckInterval = 10000; //Interval for checking out siren manual-trigger in the database
+unsigned long lastFirebaseSendTime = 0; //Timestamp of last database transmission
+unsigned long lastOnlineTimer = 0; //Timestamp of last online status transmission
+unsigned long lastPowerCheckedTime = 0; //Timestamp for last power status check out
+unsigned long lastManualCheckTime = 0; //Timestamp for last siren manual-trigger check out
+unsigned long sirenAlertDuration = 0; //Siren alert mode blast duration
+unsigned long sirenClearDuration = 0; //Siren clear mode blast duration
+int currentHour;
+int lastCountResetHour = -1;
+
+// Power Variables
+const float powerRatio = (10000.0 + 3300.0)/3300.0; //voltage divider; values of resistors used
+const float upperPowerThreshold = 11.7;
+const float lowerPowerThreshold = 10.8;
+String powerStatus;
+
+// Database Variables
 bool firebaseConnected = false;
 String deviceMAC = "00:00:00:00:00:00";
-// Path Base
 String pathBase;
+
+// Hazard Sensor Variables
+float currentTempC = 0.0;
+int currentGasValue = 0;
+bool currentMainFlameValue = false;
+int currentBackupFlameValue = 0;
+float tempThreshold;
+int flameThreshold;
+int gasThreshold;
+unsigned long lastEnvReadTime = 0; 
+
+// Siren Variables
+bool sirenAlertActive = false;
+bool sirenClearActive = false;
+bool autoTriggered = false; // true = fire-auto-detected, false = app-triggered (skip auto-transition)
+
 //ToF Variables
 bool tofSuccess = false;
-const int PERSON_THRESHOLD_MM = 1500; // Increased from 500 to 1500mm (1.5m) to detect people at normal distances
+const int personThresholdMM = 1500; // Increased from 500 to 1500mm (1.5m) to detect people at normal distances
 int totalInside = 0;
 int totalExits = 0;
 // ToF Variable: MULTI-LANE TRACKING: 4 separate state machines for columns 0, 1, 2, and 3
 int laneState[4] = {0, 0, 0, 0}; 
 // ToF Variables: Cooldown timers to prevent a single person triggering multiple lanes at once
-unsigned long lastEntryTime = 0;
-unsigned long lastExitTime = 0;
-const int EVENT_COOLDOWN_MS = 800; 
-// Environment Variables
-float currentTempC = 0.0;
-int currentGasValue = 0;
-bool currentMainFlameValue = true;
-int currentBackupFlameValue = 0;
-float tempThreshold;
-int flameThreshold;
-int gasThreshold;
-bool esp32Online = true;
-unsigned long lastEnvReadTime = 0; 
-// Siren Variables
-bool sirenAlertActive = false;
-bool sirenClearActive = false;
-bool autoTriggered = false; // true = fire-auto-detected, false = app-triggered (skip auto-transition)
-unsigned long sirenAlertDuration = 0;
-unsigned long sirenClearDuration = 0;
-// Manual trigger check interval — 2s for near-instant siren response from app
-const unsigned long ManualCheckInterval = 2000;
-unsigned long lastManualCheckTime = 0;
-// Power Variables - Voltage Divider
-const unsigned long checkPowerInterval = 5000;
-unsigned long lastPowerCheckedTime = 0;
-const float Resistor1 = 10000.0;
-const float Resistor2 = 3300.0;
-const float powerRatio = (Resistor1 + Resistor2)/Resistor2;
-const float upperPowerThreshold = 11.5;
-const float lowerPowerThreshold = 10.8;
-String powerStatus;
+unsigned long lastEntryTime[4] = {0, 0, 0, 0};
+unsigned long lastExitTime[4] = {0, 0, 0, 0};
+const int eventCooldown = 800; 
+const int CLUSTER_MERGE_MS = 500; // change name format!!!!!!!!!
+uint8_t zoneOccupancyCount[16] = {0};
+const uint8_t MIN_FRAMES_OCCUPIED = 1; // change name format!!!!!!!!!
 
 void pinConfig(){
   pinMode(BACKUP_FLAME_DIGITAL, INPUT);
@@ -91,9 +100,30 @@ void pinConfig(){
   pinMode(SIREN_2, OUTPUT);
 }
 
+void startNTPSync(){
+  if (firebaseConnected) {
+      timeClient.begin();
+      timeClient.setTimeOffset(0); // Keep epoch in UTC — Flutter handles local timezone
+      Serial.println("Syncing NTP time...");
+      int ntpRetries = 0;
+      while (!timeClient.update() && ntpRetries < 10) {
+        timeClient.forceUpdate();
+        delay(500);
+        ntpRetries++;
+      }
+      unsigned long epochTime = timeClient.getEpochTime();
+      if (epochTime > 1000000) {
+        double currentEpochMillis = (double)epochTime * 1000.0;
+        Firebase.RTDB.setDouble(&fbdo, (pathBase + "last_updated").c_str(), currentEpochMillis);
+        lastOnlineTimer = millis();
+        Serial.println("Initial heartbeat sent.");
+      } else {
+        Serial.println("WARNING: NTP sync failed, first heartbeat may be delayed.");
+      }
+  }
+}
+
 void getDeviceMAC(){
-  // Briefly initialize WiFi to read the hardware MAC address,
-  // then shut it down so WiFiManager can take over cleanly.
   WiFi.mode(WIFI_STA);
   WiFi.begin();
   delay(100);
@@ -113,6 +143,7 @@ void connectNetwork(){
     // WiFi and Firebase Setup
   WiFi.mode(WIFI_STA);
   WiFiManager wm;
+  wm.resetSettings();
   Serial.println("Connecting to WiFi...");
   bool res = wm.autoConnect("CrowdSense_Main_Ent", "12345678");
   if (!res) {
@@ -127,20 +158,15 @@ void connectNetwork(){
 }
 
 void connectDB(){
-  // Configure Firebase
   config.database_url = FIREBASE_HOST;
   config.signer.tokens.legacy_token = FIREBASE_LEGACY_TOKEN;
-  // Assign the callback function for token generation
   config.token_status_callback = tokenStatusCallback;
   Firebase.begin(&config, &auth);
   Firebase.reconnectWiFi(true);
-  // Test Firebase connection
   Serial.println("Testing Firebase connection...");
   if (Firebase.ready()) {
     firebaseConnected = true;
     Serial.println("Firebase connected successfully!");
-    // Clean boot: Force both sirens OFF in database so the firmware
-    // doesn't read stale 'true' values from a previous session.
     Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_alert_active").c_str(), false);
     Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_clear_active").c_str(), false);
     Serial.println("Sirens reset to OFF in database.");
@@ -149,29 +175,7 @@ void connectDB(){
       firebaseConnected = false;
     }
     getSensorThreshold();
-
-    // Initialize NTP and send an immediate heartbeat so the app
-    // sees this device online without waiting for the 20-second interval.
-    if (firebaseConnected) {
-      timeClient.begin();
-      timeClient.setTimeOffset(0); // Keep epoch in UTC — Flutter handles local timezone
-      Serial.println("Syncing NTP time...");
-      int ntpRetries = 0;
-      while (!timeClient.update() && ntpRetries < 10) {
-        timeClient.forceUpdate();
-        delay(500);
-        ntpRetries++;
-      }
-      unsigned long epochTime = timeClient.getEpochTime();
-      if (epochTime > 1000000) {
-        double currentEpochMillis = (double)epochTime * 1000.0;
-        Firebase.RTDB.setDouble(&fbdo, (pathBase + "last_updated").c_str(), currentEpochMillis);
-        lastHeartbeatTime = millis(); // Reset timer so next heartbeat is in 20s
-        Serial.println("Initial heartbeat sent.");
-      } else {
-        Serial.println("WARNING: NTP sync failed, first heartbeat may be delayed.");
-      }
-    }
+    startNTPSync();
 }
 
 void checkPowerStatus(){
@@ -213,29 +217,34 @@ void countCrowd(){
   if (tofSuccess) {
     VL53L7CX_ResultsData results;
     uint8_t dataReady = 0;
-
-    // Use the specific check function from the library
     sensor.vl53l7cx_check_data_ready(&dataReady);
-
     if (dataReady) {
       sensor.vl53l7cx_get_ranging_data(&results);
-
       bool laneA[4] = {false, false, false, false}; 
       bool laneB[4] = {false, false, false, false}; 
-
       for (int y = 0; y < 4; y++) {
         for (int x = 0; x < 4; x++) {
           int zone = x + (y * 4); 
-          
           /** * For multi-target sensors, distance_mm is an array that accounts for targets per zone.
            * We pull the first target found in each zone.
            **/
           int targetIndex = zone * VL53L7CX_NB_TARGET_PER_ZONE;
           int distance = results.distance_mm[targetIndex];
           uint8_t status = results.target_status[targetIndex];
-
           // Status 5 is 'Valid'. Status 6/9 can be used but are less certain.
-          if (status == 5 && distance > 0 && distance < PERSON_THRESHOLD_MM) {
+          // Using 3 feet (914mm) distance threshold uniformly for all zones
+          bool detected = (status == 5 && distance > 0 && distance < personThresholdMM);
+          // Frame debouncing: require N consecutive frames of detection before
+          // the zone is considered occupied. Filters out single-frame ghost readings.
+          if (detected) {
+            if (zoneOccupancyCount[zone] < 255) zoneOccupancyCount[zone]++;
+          } else {
+            zoneOccupancyCount[zone] = 0;
+          }
+
+          bool confirmed = (zoneOccupancyCount[zone] >= MIN_FRAMES_OCCUPIED);
+
+          if (confirmed) {
             if (y < 2) laneA[x] = true; 
             else laneB[x] = true;       
           }
@@ -243,13 +252,16 @@ void countCrowd(){
       }
 
       unsigned long currentMillis = millis();
-      bool globalA = false; 
-      bool globalB = false;
+
+      // --- Deferred completion tracking ---
+      // Instead of counting immediately when a lane completes, we collect
+      // all completions in this frame, then cluster adjacent ones together.
+      // This lets 2 people in separate lanes be counted as 2, while a single
+      // wide person triggering adjacent lanes is counted as 1.
+      bool entryCompleted[4] = {false, false, false, false};
+      bool exitCompleted[4] = {false, false, false, false};
 
       for (int x = 0; x < 4; x++) {
-        if (laneA[x]) globalA = true;
-        if (laneB[x]) globalB = true;
-
         bool A = laneA[x];
         bool B = laneB[x];
 
@@ -270,12 +282,17 @@ void countCrowd(){
             break;
           case 3: 
             if (!A && !B) {
-              if (currentMillis - lastEntryTime > EVENT_COOLDOWN_MS) {
-                totalInside++;
-                lastEntryTime = currentMillis;
+              // Lane completed an ENTRY transition — mark it (don't count yet)
+              if (currentMillis - lastEntryTime[x] > eventCooldown) {
+                // Temporal clustering: check if adjacent lane completed recently
+                bool adjacentRecent = false;
+                if (x > 0 && (currentMillis - lastEntryTime[x - 1] < CLUSTER_MERGE_MS)) adjacentRecent = true;
+                if (x < 3 && (currentMillis - lastEntryTime[x + 1] < CLUSTER_MERGE_MS)) adjacentRecent = true;
                 
-                // LIVE UPDATE: Push to Firebase immediately so the dashboard reflects the change instantly
-                Firebase.RTDB.setInt(&fbdo, (pathBase + "people_inside").c_str(), totalInside);
+                if (!adjacentRecent) {
+                  entryCompleted[x] = true;
+                }
+                lastEntryTime[x] = currentMillis;
               }
               laneState[x] = 0;
             }
@@ -294,14 +311,17 @@ void countCrowd(){
             break;
           case 6: 
             if (!A && !B) {
-              if (currentMillis - lastExitTime > EVENT_COOLDOWN_MS) {
-                totalExits++;
-                if (totalInside > 0) totalInside--;  // Never go below 0
-                lastExitTime = currentMillis;
-
-                // LIVE UPDATE: Push to Firebase immediately
-                Firebase.RTDB.setInt(&fbdo, (pathBase + "people_inside").c_str(), totalInside);
-                Firebase.RTDB.setInt(&fbdo, (pathBase + "total_exits").c_str(), totalExits);
+              // Lane completed an EXIT transition — mark it (don't count yet)
+              if (currentMillis - lastExitTime[x] > eventCooldown) {
+                // Temporal clustering: check if adjacent lane completed recently
+                bool adjacentRecent = false;
+                if (x > 0 && (currentMillis - lastExitTime[x - 1] < CLUSTER_MERGE_MS)) adjacentRecent = true;
+                if (x < 3 && (currentMillis - lastExitTime[x + 1] < CLUSTER_MERGE_MS)) adjacentRecent = true;
+                
+                if (!adjacentRecent) {
+                  exitCompleted[x] = true;
+                }
+                lastExitTime[x] = currentMillis;
               }
               laneState[x] = 0;
             }
@@ -309,6 +329,36 @@ void countCrowd(){
             else if (!A && B) laneState[x] = 4;
             break;
         }
+      }
+
+      // --- Count occurrences ---
+      int entryCount = 0;
+      for (int x = 0; x < 4; x++) {
+        if (entryCompleted[x]) {
+          entryCount++;
+        }
+      }
+
+      int exitCount = 0;
+      for (int x = 0; x < 4; x++) {
+        if (exitCompleted[x]) {
+          exitCount++;
+        }
+      }
+
+      // --- Apply counts and push to Firebase ---
+      if (entryCount > 0) {
+        totalInside += entryCount;
+        Firebase.RTDB.setInt(&fbdo, (pathBase + "people_inside").c_str(), totalInside);
+        Serial.print("ENTRY x"); Serial.println(entryCount);
+      }
+
+      if (exitCount > 0) {
+        totalExits += exitCount;
+        totalInside -= exitCount;
+        Firebase.RTDB.setInt(&fbdo, (pathBase + "people_inside").c_str(), totalInside);
+        Firebase.RTDB.setInt(&fbdo, (pathBase + "total_exits").c_str(), totalExits);
+        Serial.print("EXIT x"); Serial.println(exitCount);
       }
 
       if (totalInside < 0) totalInside = 0;
@@ -350,10 +400,6 @@ void getSensorThreshold() {
   Serial.println(gasThreshold);
 }
 
-// ═══════════════════════════════════════════════════
-// APP COMMAND HANDLER — polls siren_alert_active & siren_clear_active
-// from RTDB every 2 seconds for near-instant response
-// ═══════════════════════════════════════════════════
 void checkAppCommands() {
   if (firebaseConnected && (millis() - lastManualCheckTime >= ManualCheckInterval)) {
     lastManualCheckTime = millis();
@@ -395,18 +441,26 @@ void checkAppCommands() {
         Serial.println("APP COMMAND: Safety Alert DEACTIVATED.");
       }
     }
+
+    if (Firebase.RTDB.getInt(&fbdo, (pathBase + "total_exits").c_str())) {
+      int cloudExits = fbdo.intData();
+      if (cloudExits != totalExits) {
+        Serial.print("SYNC: total_exits updated from cloud: ");
+        Serial.print(totalExits);
+        Serial.print(" -> ");
+        Serial.println(cloudExits);
+        totalExits = cloudExits;
+      }
+    }
   }
 }
 
-// ═══════════════════════════════════════════════════
-// AUTO-TRIGGER — fire detection & area-clear logic
-// ═══════════════════════════════════════════════════
 void autoTriggerSirens() {
   // MQ Gas Sensors require a warm-up period on boot where their analog output spikes.
   // We ignore all sensor readings for the first 30 seconds to prevent false alarms.
   bool isWarmupPhase = millis() < 15000;
   
-  bool isFireDetected = !isWarmupPhase && (!currentMainFlameValue || currentBackupFlameValue <= flameThreshold) && (currentGasValue >= gasThreshold);
+  bool isFireDetected = !isWarmupPhase && (currentMainFlameValue || currentBackupFlameValue <= flameThreshold) && (currentGasValue >= gasThreshold);
 
   // --- Auto Fire Detection ---
   // Only trigger if no evacuation is running AND no safety alert is running.
@@ -466,13 +520,9 @@ void autoTriggerSirens() {
   }
 }
 
-// ═══════════════════════════════════════════════════
-// HEARTBEAT — keeps device "Online" in Flutter app
-// Updates last_updated every 20 seconds
-// ═══════════════════════════════════════════════════
-void sendHeartbeat() {
-  if (firebaseConnected && (millis() - lastHeartbeatTime >= HEARTBEAT_INTERVAL)) {
-    lastHeartbeatTime = millis();
+void sendDeviceStatus() {
+  if (firebaseConnected && (millis() - lastOnlineTimer >= onlineStatusInterval)) {
+    lastOnlineTimer = millis();
     timeClient.update();
     unsigned long epochTime = timeClient.getEpochTime();
     if (epochTime > 1000000) {
@@ -485,7 +535,7 @@ void sendHeartbeat() {
 }
 
 void uploadData(){
-  if (firebaseConnected && (millis() - lastFirebaseSendTime >= FIREBASE_SEND_INTERVAL)) {
+  if (firebaseConnected && (millis() - lastFirebaseSendTime >= firebaseSendInterval)) {
     lastFirebaseSendTime = millis();
     
     timeClient.update();
@@ -511,6 +561,31 @@ void uploadData(){
     } else if (epochTime <= 1000000) {
       Serial.println("Waiting for NTP sync...");
     }
+  }
+}
+
+void autoResetCountReadings() {
+  if (!timeClient.update()) return;
+  currentHour = timeClient.getHours();
+
+  if (lastCountResetHour == -1) {
+    lastCountResetHour = currentHour;
+    Serial.print("NTP Initialized. Current UTC Hour: ");
+    Serial.println(currentHour);
+    return; 
+  }
+
+  if (currentHour != lastCountResetHour) {
+    Serial.println("--- HOURLY RESET TRIGGERED ---");
+    totalInside = 0;
+    totalExits = 0;
+
+    if (firebaseConnected) {
+      Firebase.RTDB.setInt(&fbdo, (pathBase + "people_inside").c_str(), 0);
+      Firebase.RTDB.setInt(&fbdo, (pathBase + "total_exits").c_str(), 0);
+    }
+
+    lastCountResetHour = currentHour; // Sync the tracker
   }
 }
 
@@ -552,7 +627,6 @@ void setup() {
 }
 
 void loop() {
-  // Guard: If WiFi dropped, try to reconnect before doing anything
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi lost! Attempting reconnect...");
     WiFi.reconnect();
@@ -572,17 +646,9 @@ void loop() {
   checkPowerStatus();
   readEnvironment();
   countCrowd();
-  // Poll app commands every 2 seconds for near-instant siren response
   checkAppCommands();
-
-  // Auto-trigger sirens from sensor readings + handle timeouts
   autoTriggerSirens();
-
-  // Keep device "Online" in Flutter app
-  sendHeartbeat();
-
-  // Full data upload every 15 minutes
+  sendDeviceStatus();
   uploadData();
-
-  delay(10); // Give the ESP32 a breather to prevent overheating
+  autoResetCountReadings();
 }
