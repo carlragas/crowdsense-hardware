@@ -115,7 +115,7 @@ void connectNetwork(){
   WiFi.mode(WIFI_STA);
   WiFiManager wm;
   Serial.println("Connecting to WiFi...");
-  bool res = wm.autoConnect("CrowdSense_Main_Entry", "12345678");
+  bool res = wm.autoConnect("CrowdSense_Main_Ent", "12345678");
   if (!res) {
     Serial.println("Failed to establish WiFi connection.");
     firebaseConnected = false;
@@ -407,7 +407,7 @@ void checkAppCommands() {
 void autoTriggerSirens() {
   // MQ Gas Sensors require a warm-up period on boot where their analog output spikes.
   // We ignore all sensor readings for the first 30 seconds to prevent false alarms.
-  bool isWarmupPhase = millis() < 30000;
+  bool isWarmupPhase = millis() < 15000;
   
   bool isFireDetected = !isWarmupPhase && (!currentMainFlameValue || currentBackupFlameValue <= flameThreshold) && (currentGasValue >= gasThreshold);
 
