@@ -37,10 +37,10 @@ WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 60000);
 
 // Time Variables
-const unsigned long firebaseSendInterval = 120000; // Interval for sending data in the database
+const unsigned long firebaseSendInterval = 5000; // Interval for sending data in the database
 const unsigned long onlineStatusInterval = 20000;  // Interval for sending online status
-const unsigned long checkPowerInterval = 5000; //Interval for checking power status
-const unsigned long ManualCheckInterval = 10000; //Interval for checking out siren manual-trigger in the database
+const unsigned long checkPowerInterval = 60000; //Interval for checking power status
+const unsigned long ManualCheckInterval = 5000; //Interval for checking out siren manual-trigger in the database
 unsigned long lastFirebaseSendTime = 0; //Timestamp of last database transmission
 unsigned long lastOnlineTimer = 0; //Timestamp of last online status transmission
 unsigned long lastPowerCheckedTime = 0; //Timestamp for last power status check out
