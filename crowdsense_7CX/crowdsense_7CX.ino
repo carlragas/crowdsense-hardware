@@ -207,6 +207,7 @@ void readEnvironment(){
   currentTempC = sensors.getTempCByIndex(0);
     Serial.print("Temp: "); Serial.print(currentTempC); Serial.print("C | ");
     Serial.print("Gas: "); Serial.print(currentGasValue); Serial.print(" | ");
+    Serial.print("Main Flame: "); Serial.print(currentMainFlameValue); Serial.print(" | ");
     Serial.print("Flame: "); Serial.print(currentBackupFlameValue); Serial.print(" | ");
     Serial.print("People Inside: "); Serial.println(totalInside);
   }
@@ -459,7 +460,7 @@ void autoTriggerSirens() {
   // We ignore all sensor readings for the first 30 seconds to prevent false alarms.
   bool isWarmupPhase = millis() < 15000;
   
-  bool isFireDetected = !isWarmupPhase && (currentMainFlameValue || currentBackupFlameValue <= flameThreshold) && (currentGasValue >= gasThreshold);
+  bool isFireDetected = !isWarmupPhase && (!currentMainFlameValue || currentBackupFlameValue <= flameThreshold) && (currentGasValue >= gasThreshold);
 
   // --- Auto Fire Detection ---
   // Only trigger if no evacuation is running AND no safety alert is running.
@@ -485,12 +486,12 @@ void autoTriggerSirens() {
     if (peopleClear || fireClear) {
       // 1. Turn OFF evacuation siren first
       sirenAlertActive = false;
-      digitalWrite(SIREN_2, LOW);
+      digitalWrite(SIREN_2, HIGH);
       Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_alert_active").c_str(), false);
 
       // 2. Turn ON safety alert
       sirenClearActive = true;
-      digitalWrite(SIREN_1, HIGH);
+      digitalWrite(SIREN_1, LOW);
       sirenClearDuration = millis() + 180000;
       Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_clear_active").c_str(), true);
 
@@ -507,13 +508,13 @@ void autoTriggerSirens() {
   // --- Siren Timeouts ---
   if (sirenAlertActive && millis() >= sirenAlertDuration) {
     sirenAlertActive = false;
-    digitalWrite(SIREN_2, LOW);
+    digitalWrite(SIREN_2, HIGH);
     Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_alert_active").c_str(), false);
     Serial.println("SIREN TIMEOUT: Evacuation siren deactivated.");
   }
   if (sirenClearActive && millis() >= sirenClearDuration) {
     sirenClearActive = false;
-    digitalWrite(SIREN_1, LOW);
+    digitalWrite(SIREN_1, HIGH);
     Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_clear_active").c_str(), false);
     Serial.println("SIREN TIMEOUT: Safety alert deactivated.");
   }
