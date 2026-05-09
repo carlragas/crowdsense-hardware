@@ -64,7 +64,7 @@ String pathBase;
 // Hazard Sensor Variables
 float currentTempC = 0.0;
 int currentGasValue = 0;
-bool currentMainFlameValue = false;
+bool currentMainFlameValue = true; //true for no flame detected
 int currentBackupFlameValue = 0;
 float tempThreshold;
 int flameThreshold;
