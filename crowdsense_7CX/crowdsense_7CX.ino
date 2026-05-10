@@ -37,10 +37,10 @@ WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 60000);
 
 // Time Variables
-const unsigned long firebaseSendInterval = 5000; // Interval for sending data in the database
+const unsigned long firebaseSendInterval = 120000; // Interval for sending data in the database
 const unsigned long onlineStatusInterval = 20000;  // Interval for sending online status
-const unsigned long checkPowerInterval = 60000; //Interval for checking power status
-const unsigned long ManualCheckInterval = 5000; //Interval for checking out siren manual-trigger in the database
+const unsigned long checkPowerInterval = 5000; //Interval for checking power status
+const unsigned long ManualCheckInterval = 10000; //Interval for checking out siren manual-trigger in the database
 unsigned long lastFirebaseSendTime = 0; //Timestamp of last database transmission
 unsigned long lastOnlineTimer = 0; //Timestamp of last online status transmission
 unsigned long lastPowerCheckedTime = 0; //Timestamp for last power status check out
@@ -64,7 +64,7 @@ String pathBase;
 // Hazard Sensor Variables
 float currentTempC = 0.0;
 int currentGasValue = 0;
-bool currentMainFlameValue = true; //true for no flame detected
+bool currentMainFlameValue = false;
 int currentBackupFlameValue = 0;
 float tempThreshold;
 int flameThreshold;
@@ -87,9 +87,9 @@ int laneState[4] = {0, 0, 0, 0};
 unsigned long lastEntryTime[4] = {0, 0, 0, 0};
 unsigned long lastExitTime[4] = {0, 0, 0, 0};
 const int eventCooldown = 800; 
-const int clusterMergeMS = 500; 
+const int CLUSTER_MERGE_MS = 500; // change name format!!!!!!!!!
 uint8_t zoneOccupancyCount[16] = {0};
-const uint8_t minFramesOccupied = 1; 
+const uint8_t MIN_FRAMES_OCCUPIED = 1; // change name format!!!!!!!!!
 
 void pinConfig(){
   pinMode(BACKUP_FLAME_DIGITAL, INPUT);
@@ -143,6 +143,7 @@ void connectNetwork(){
     // WiFi and Firebase Setup
   WiFi.mode(WIFI_STA);
   WiFiManager wm;
+  wm.resetSettings();
   Serial.println("Connecting to WiFi...");
   bool res = wm.autoConnect("CrowdSense_Main_Ent", "12345678");
   if (!res) {
@@ -207,7 +208,6 @@ void readEnvironment(){
   currentTempC = sensors.getTempCByIndex(0);
     Serial.print("Temp: "); Serial.print(currentTempC); Serial.print("C | ");
     Serial.print("Gas: "); Serial.print(currentGasValue); Serial.print(" | ");
-    Serial.print("Main Flame: "); Serial.print(currentMainFlameValue); Serial.print(" | ");
     Serial.print("Flame: "); Serial.print(currentBackupFlameValue); Serial.print(" | ");
     Serial.print("People Inside: "); Serial.println(totalInside);
   }
@@ -242,7 +242,7 @@ void countCrowd(){
             zoneOccupancyCount[zone] = 0;
           }
 
-          bool confirmed = (zoneOccupancyCount[zone] >= minFramesOccupied);
+          bool confirmed = (zoneOccupancyCount[zone] >= MIN_FRAMES_OCCUPIED);
 
           if (confirmed) {
             if (y < 2) laneA[x] = true; 
@@ -286,8 +286,8 @@ void countCrowd(){
               if (currentMillis - lastEntryTime[x] > eventCooldown) {
                 // Temporal clustering: check if adjacent lane completed recently
                 bool adjacentRecent = false;
-                if (x > 0 && (currentMillis - lastEntryTime[x - 1] < clusterMergeMS)) adjacentRecent = true;
-                if (x < 3 && (currentMillis - lastEntryTime[x + 1] < clusterMergeMS)) adjacentRecent = true;
+                if (x > 0 && (currentMillis - lastEntryTime[x - 1] < CLUSTER_MERGE_MS)) adjacentRecent = true;
+                if (x < 3 && (currentMillis - lastEntryTime[x + 1] < CLUSTER_MERGE_MS)) adjacentRecent = true;
                 
                 if (!adjacentRecent) {
                   entryCompleted[x] = true;
@@ -315,8 +315,8 @@ void countCrowd(){
               if (currentMillis - lastExitTime[x] > eventCooldown) {
                 // Temporal clustering: check if adjacent lane completed recently
                 bool adjacentRecent = false;
-                if (x > 0 && (currentMillis - lastExitTime[x - 1] < clusterMergeMS)) adjacentRecent = true;
-                if (x < 3 && (currentMillis - lastExitTime[x + 1] < clusterMergeMS)) adjacentRecent = true;
+                if (x > 0 && (currentMillis - lastExitTime[x - 1] < CLUSTER_MERGE_MS)) adjacentRecent = true;
+                if (x < 3 && (currentMillis - lastExitTime[x + 1] < CLUSTER_MERGE_MS)) adjacentRecent = true;
                 
                 if (!adjacentRecent) {
                   exitCompleted[x] = true;
@@ -460,7 +460,7 @@ void autoTriggerSirens() {
   // We ignore all sensor readings for the first 30 seconds to prevent false alarms.
   bool isWarmupPhase = millis() < 15000;
   
-  bool isFireDetected = !isWarmupPhase && (!currentMainFlameValue || currentBackupFlameValue <= flameThreshold) && (currentGasValue >= gasThreshold);
+  bool isFireDetected = !isWarmupPhase && (currentMainFlameValue || currentBackupFlameValue <= flameThreshold) && (currentGasValue >= gasThreshold);
 
   // --- Auto Fire Detection ---
   // Only trigger if no evacuation is running AND no safety alert is running.
@@ -468,7 +468,7 @@ void autoTriggerSirens() {
   if (!sirenAlertActive && !sirenClearActive && isFireDetected) {
     autoTriggered = true; // Mark as sensor-auto-detected (enables auto-transition)
     sirenAlertActive = true;
-    digitalWrite(SIREN_2, HIGH);
+    digitalWrite(SIREN_2, LOW);
     sirenAlertDuration = millis() + 180000;
     Firebase.RTDB.setBool(&fbdo, (pathBase + "siren_alert_active").c_str(), true);
     Serial.println("FIRE DETECTED: Evacuation siren ACTIVATED.");
